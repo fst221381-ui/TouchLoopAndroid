@@ -19,8 +19,16 @@ import kotlin.math.max
 import kotlin.math.min
 
 class MacroAccessibilityService : AccessibilityService() {
-    data class Step(val kind: String, val x: Float, val y: Float, val left: Int, val top: Int,
-                    val right: Int, val bottom: Int, val delay: Long)
+    data class Step(
+        val kind: String,
+        val x: Float = 0f,
+        val y: Float = 0f,
+        val left: Int = 0,
+        val top: Int = 0,
+        val right: Int = 0,
+        val bottom: Int = 0,
+        val delay: Long = 350L
+    )
 
     private val handler = Handler(Looper.getMainLooper())
     private val steps = mutableListOf<Step>()
@@ -31,6 +39,11 @@ class MacroAccessibilityService : AccessibilityService() {
     private var panel: View? = null
     private lateinit var wm: WindowManager
     private var status: TextView? = null
+
+    // Accessibility may emit several scroll events for one finger swipe.
+    // Debounce them so one user scroll becomes one replay step.
+    private var pendingScroll: Step? = null
+    private val flushScrollRunnable = Runnable { flushPendingScroll() }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -47,17 +60,56 @@ class MacroAccessibilityService : AccessibilityService() {
 
         val source = event.source ?: return
         val bounds = Rect()
-        try { source.getBoundsInScreen(bounds) } finally { source.recycle() }
+        try {
+            source.getBoundsInScreen(bounds)
+        } finally {
+            source.recycle()
+        }
         if (bounds.width() <= 0 || bounds.height() <= 0) return
 
-        val now = System.currentTimeMillis()
-        val delay = if (lastEventAt == 0L) 350L else (now - lastEventAt).coerceIn(120L, 5000L)
-        lastEventAt = now
-        val kind = if (event.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED) "SCROLL" else "TAP"
-        val x = bounds.exactCenterX()
-        val y = bounds.exactCenterY()
-        steps.add(Step(kind, x, y, bounds.left, bounds.top, bounds.right, bounds.bottom, delay))
-        status?.text = "ضبط: ${steps.size} عمل"
+        if (event.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED) {
+            val now = System.currentTimeMillis()
+            val delay = if (lastEventAt == 0L) 350L else (now - lastEventAt).coerceIn(120L, 5000L)
+            pendingScroll = Step(
+                kind = "SCROLL",
+                x = bounds.exactCenterX(),
+                y = bounds.exactCenterY(),
+                left = bounds.left,
+                top = bounds.top,
+                right = bounds.right,
+                bottom = bounds.bottom,
+                delay = delay
+            )
+            handler.removeCallbacks(flushScrollRunnable)
+            handler.postDelayed(flushScrollRunnable, 300L)
+        } else {
+            // Keep the sequence correct if a click immediately follows a scroll.
+            handler.removeCallbacks(flushScrollRunnable)
+            flushPendingScroll()
+            addRecordedStep(
+                Step(
+                    kind = "TAP",
+                    x = bounds.exactCenterX(),
+                    y = bounds.exactCenterY(),
+                    left = bounds.left,
+                    top = bounds.top,
+                    right = bounds.right,
+                    bottom = bounds.bottom
+                )
+            )
+        }
+    }
+
+    private fun flushPendingScroll() {
+        val scroll = pendingScroll ?: return
+        pendingScroll = null
+        if (recording && !playing) addRecordedStep(scroll)
+    }
+
+    private fun addRecordedStep(step: Step) {
+        steps.add(step)
+        lastEventAt = System.currentTimeMillis()
+        status?.text = "ضبط: ${steps.size} مرحله"
     }
 
     override fun onInterrupt() {
@@ -85,23 +137,48 @@ class MacroAccessibilityService : AccessibilityService() {
         root.addView(status)
         root.addView(button("● Record") {
             stopPlayback()
+            handler.removeCallbacks(flushScrollRunnable)
+            pendingScroll = null
             steps.clear()
             recording = true
             lastEventAt = 0L
             status?.text = "در حال ضبط…"
         })
+        root.addView(button("↩ بازگشت / ثبت خروج") {
+            if (recording && !playing) {
+                handler.removeCallbacks(flushScrollRunnable)
+                flushPendingScroll()
+                addRecordedStep(Step(kind = "BACK"))
+                status?.text = "مرحله بازگشت ثبت شد (${steps.size})"
+                // Perform the same back action now, so recording continues from the list screen.
+                performGlobalAction(GLOBAL_ACTION_BACK)
+            } else if (playing) {
+                status?.text = "برای خروج از پخش، Stop را بزن"
+            } else {
+                performGlobalAction(GLOBAL_ACTION_BACK)
+            }
+        })
         root.addView(button("■ Stop") {
+            if (recording) {
+                handler.removeCallbacks(flushScrollRunnable)
+                flushPendingScroll()
+            }
             recording = false
             stopPlayback()
             saveMacro()
-            status?.text = "متوقف شد؛ ${steps.size} عمل ذخیره شد"
+            status?.text = "متوقف شد؛ ${steps.size} مرحله ذخیره شد"
         })
         root.addView(button("▶ Play loop") {
+            if (recording) {
+                handler.removeCallbacks(flushScrollRunnable)
+                flushPendingScroll()
+            }
             recording = false
             saveMacro()
             if (steps.isEmpty()) {
                 status?.text = "اول یک ماکرو ضبط کن"
             } else {
+                stopPlayback()
                 playing = true
                 playIndex = 0
                 status?.text = "در حال تکرار…"
@@ -128,12 +205,19 @@ class MacroAccessibilityService : AccessibilityService() {
     private fun runNext() {
         if (!playing || steps.isEmpty()) return
         if (playIndex >= steps.size) playIndex = 0
-        val step = steps[playIndex]
-        playIndex++
+        val step = steps[playIndex++]
         handler.postDelayed({
             if (!playing) return@postDelayed
-            if (step.kind == "SCROLL") performSwipe(step) else performTap(step)
-        }, step.delay)
+            when (step.kind) {
+                "BACK" -> {
+                    performGlobalAction(GLOBAL_ACTION_BACK)
+                    // Allow the app to finish its navigation transition before the next step.
+                    handler.postDelayed({ runNext() }, 650L)
+                }
+                "SCROLL" -> performSwipe(step)
+                else -> performTap(step)
+            }
+        }, step.delay.coerceIn(120L, 5000L))
     }
 
     private fun performTap(step: Step) {
@@ -172,6 +256,8 @@ class MacroAccessibilityService : AccessibilityService() {
 
     private fun stopAll() {
         recording = false
+        handler.removeCallbacks(flushScrollRunnable)
+        pendingScroll = null
         stopPlayback()
         saveMacro()
     }
@@ -195,9 +281,18 @@ class MacroAccessibilityService : AccessibilityService() {
             val arr = JSONArray(raw)
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
-                steps.add(Step(o.getString("kind"), o.getDouble("x").toFloat(), o.getDouble("y").toFloat(),
-                    o.getInt("left"), o.getInt("top"), o.getInt("right"), o.getInt("bottom"),
-                    o.optLong("delay", 350L)))
+                steps.add(
+                    Step(
+                        kind = o.getString("kind"),
+                        x = o.optDouble("x", 0.0).toFloat(),
+                        y = o.optDouble("y", 0.0).toFloat(),
+                        left = o.optInt("left", 0),
+                        top = o.optInt("top", 0),
+                        right = o.optInt("right", 0),
+                        bottom = o.optInt("bottom", 0),
+                        delay = o.optLong("delay", 350L)
+                    )
+                )
             }
         } catch (_: Exception) { steps.clear() }
     }
