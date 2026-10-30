@@ -29,7 +29,8 @@ class MacroAccessibilityService : AccessibilityService() {
         val top: Int = 0,
         val right: Int = 0,
         val bottom: Int = 0,
-        val delay: Long = 350L
+        val delay: Long = 350L,
+        val scrollDeltaY: Int = 0
     )
 
     private val handler = Handler(Looper.getMainLooper())
@@ -83,10 +84,12 @@ class MacroAccessibilityService : AccessibilityService() {
                 top = bounds.top,
                 right = bounds.right,
                 bottom = bounds.bottom,
-                delay = delay
+                delay = delay,
+                scrollDeltaY = if (android.os.Build.VERSION.SDK_INT >= 28) event.scrollDeltaY else 0
             )
             handler.removeCallbacks(flushScrollRunnable)
-            handler.postDelayed(flushScrollRunnable, 300L)
+            // Flush sooner so separate quick swipes are less likely to merge into one step.
+            handler.postDelayed(flushScrollRunnable, 140L)
         } else {
             // Keep the sequence correct if a click immediately follows a scroll.
             handler.removeCallbacks(flushScrollRunnable)
@@ -328,11 +331,29 @@ class MacroAccessibilityService : AccessibilityService() {
         val top = max(0, step.top)
         val bottom = max(top + 2, step.bottom)
         val x = min(right - 2f, max(left + 2f, step.x))
-        val startY = min(bottom - 2f, max(top + 2f, step.y + 80f))
-        val endY = min(bottom - 2f, max(top + 2f, step.y - 80f))
+        val height = (bottom - top).toFloat().coerceAtLeast(4f)
+
+        // Replay a much longer swipe than the old fixed 160 px movement. Accessibility
+        // reports content scroll delta, not the user's exact finger path, so use it as
+        // a guide and fall back to most of the scrollable viewport height.
+        val wantedDistance = if (step.scrollDeltaY != 0) kotlin.math.abs(step.scrollDeltaY).toFloat() * 1.25f
+            else height * 0.72f
+        val distance = wantedDistance.coerceIn(height * 0.45f, height * 0.88f)
+        val centerY = min(bottom - 2f, max(top + 2f, step.y))
+        val delta = if (step.scrollDeltaY < 0) distance else -distance
+        var startY = centerY - delta / 2f
+        var endY = centerY + delta / 2f
+        // Keep both ends inside the detected scrollable area while preserving direction.
+        if (startY < top + 2f) { endY += (top + 2f - startY); startY = top + 2f }
+        if (endY > bottom - 2f) { startY -= (endY - (bottom - 2f)); endY = bottom - 2f }
+        startY = startY.coerceIn(top + 2f, bottom - 2f)
+        endY = endY.coerceIn(top + 2f, bottom - 2f)
         val path = Path().apply { moveTo(x, startY); lineTo(x, endY) }
+        // Approximate the recorded pace: intervals are recorded between steps; use a
+        // bounded duration so a quick recorded scroll does not replay as a slow drag.
+        val duration = (step.delay * 0.65f).toLong().coerceIn(120L, 420L)
         val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, 300))
+            .addStroke(GestureDescription.StrokeDescription(path, 0, duration))
             .build()
         dispatchGesture(gesture, object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) { runNext() }
@@ -359,7 +380,7 @@ class MacroAccessibilityService : AccessibilityService() {
             arr.put(JSONObject().apply {
                 put("kind", s.kind); put("x", s.x); put("y", s.y)
                 put("left", s.left); put("top", s.top); put("right", s.right); put("bottom", s.bottom)
-                put("delay", s.delay)
+                put("delay", s.delay); put("scrollDeltaY", s.scrollDeltaY)
             })
         }
         getSharedPreferences("touch_loop", MODE_PRIVATE).edit().putString("macro", arr.toString()).apply()
@@ -381,7 +402,8 @@ class MacroAccessibilityService : AccessibilityService() {
                         top = o.optInt("top", 0),
                         right = o.optInt("right", 0),
                         bottom = o.optInt("bottom", 0),
-                        delay = o.optLong("delay", 350L)
+                        delay = o.optLong("delay", 350L),
+                        scrollDeltaY = o.optInt("scrollDeltaY", 0)
                     )
                 )
             }
