@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Touch Loop</string>
+    <string name="accessibility_description">Records accessibility click and scroll events for local macro replay. It does not record passwords or typed text.</string>
+</resources>
