@@ -433,11 +433,36 @@ class MacroAccessibilityService : AccessibilityService() {
             }, null)
         } else {
             val root = rootInActiveWindow
-            val scrolled = performScrollOnNode(root, step.scrollDeltaY >= 0)
+            // On Android 6 dispatchGesture is unavailable. First try the scrollable
+            // node under the recorded scroll point (and its ancestors), then fall back
+            // to any accessible scrollable node in the active window.
+            val forward = step.scrollDeltaY >= 0
+            val scrolled = performScrollAtPoint(root, step.x.toInt(), step.y.toInt(), forward) ||
+                performScrollOnNode(root, forward)
             root?.recycle()
-            if (!scrolled) status?.text = "اندروید ۶: اسکرول این صفحه پشتیبانی نمی‌شود"
+            if (!scrolled) status?.text = "اندروید ۶: این صفحه اسکرول قابل‌دسترسی ندارد؛ ممکن است در این برنامه کار نکند"
             handler.postDelayed({ runNext() }, duration)
         }
+    }
+
+    private fun performScrollAtPoint(node: AccessibilityNodeInfo?, x: Int, y: Int, forward: Boolean): Boolean {
+        if (node == null) return false
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        if (!bounds.contains(x, y)) return false
+
+        // Prefer the most specific node at the recorded point, then let its
+        // scrollable parent handle the action if the child itself cannot scroll.
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val didScroll = try { performScrollAtPoint(child, x, y, forward) } finally { child.recycle() }
+            if (didScroll) return true
+        }
+        if (node.isScrollable) {
+            val action = if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+            if (node.performAction(action)) return true
+        }
+        return false
     }
 
     private fun performScrollOnNode(node: AccessibilityNodeInfo?, forward: Boolean): Boolean {
