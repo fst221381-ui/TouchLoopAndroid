@@ -39,6 +39,7 @@ class MacroAccessibilityService : AccessibilityService() {
     private val steps = mutableListOf<Step>()
     private var recording = false
     private var playing = false
+    private var playbackToken = 0
     private var playIndex = 0
     private var lastEventAt = 0L
     private var panel: View? = null
@@ -62,8 +63,9 @@ class MacroAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
         loadMacro()
-        playbackSpeed = getSharedPreferences("touch_loop", MODE_PRIVATE).getFloat("playback_speed", 1.0f).coerceIn(0.25f, 4.0f)
+        playbackSpeed = getSharedPreferences("touch_loop", MODE_PRIVATE).getFloat("playback_speed", 1.0f).coerceIn(0.25f, 8.0f)
         showPanel()
+        updateSpeedLabel()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -138,17 +140,21 @@ class MacroAccessibilityService : AccessibilityService() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setPadding(10, 10, 10, 10)
+            setPadding(6, 6, 6, 6)
             setBackgroundColor(0xEE202124.toInt())
         }
         status = TextView(this).apply {
             text = "Touch Loop آماده است"
             setTextColor(0xFFFFFFFF.toInt())
-            textSize = 12f
+            textSize = 10f
             gravity = Gravity.CENTER
         }
         fun button(label: String, action: () -> Unit) = Button(this).apply {
             text = label
+            textSize = 10f
+            minimumHeight = (30 * resources.displayMetrics.density).toInt()
+            setPadding(4, 1, 4, 1)
+            isAllCaps = false
             setOnClickListener { action() }
         }
         root.addView(status)
@@ -203,10 +209,11 @@ class MacroAccessibilityService : AccessibilityService() {
                 status?.text = "اول یک ماکرو ضبط کن"
             } else {
                 stopPlayback()
+                playbackToken++
                 playing = true
                 playIndex = 0
                 status?.text = "در حال تکرار…"
-                runNext()
+                runNext(playbackToken)
             }
         })
         val speedRow = LinearLayout(this).apply {
@@ -218,15 +225,15 @@ class MacroAccessibilityService : AccessibilityService() {
             updateSpeedLabel()
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         speedLabel = TextView(this).apply {
-            text = "سرعت: 1×"
-            textSize = 12f
+            text = "سرعت: ${formatSpeed(playbackSpeed)}×"
+            textSize = 10f
             setTextColor(0xFFFFFFFF.toInt())
             gravity = Gravity.CENTER
             setPadding(8, 0, 8, 0)
         }
         speedRow.addView(speedLabel, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         speedRow.addView(button("سرعت +") {
-            playbackSpeed = (playbackSpeed * 1.25f).coerceAtMost(4.0f)
+            playbackSpeed = (playbackSpeed * 1.25f).coerceAtMost(8.0f)
             updateSpeedLabel()
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         root.addView(speedRow)
@@ -335,40 +342,47 @@ class MacroAccessibilityService : AccessibilityService() {
         pointPicker = null
     }
 
-    private fun runNext() {
-        if (!playing || steps.isEmpty()) return
-        if (playIndex >= steps.size) playIndex = 0
+    private fun runNext(session: Int = playbackToken) {
+        if (!playing || session != playbackToken || steps.isEmpty()) return
+        // A short, speed-scaled pause between full loops. This is independent from Stop,
+        // so stopping playback never changes the selected speed.
+        if (playIndex >= steps.size) {
+            playIndex = 0
+            val loopGap = (100L / playbackSpeed).toLong().coerceIn(20L, 100L)
+            handler.postDelayed({ if (playing && session == playbackToken) runNext(session) }, loopGap)
+            return
+        }
         val step = steps[playIndex++]
         handler.postDelayed({
-            if (!playing) return@postDelayed
+            if (!playing || session != playbackToken) return@postDelayed
             when (step.kind) {
                 "BACK" -> {
                     performGlobalAction(GLOBAL_ACTION_BACK)
                     // Allow the app to finish its navigation transition before the next step.
-                    handler.postDelayed({ runNext() }, 650L)
+                    handler.postDelayed({ runNext(session) }, (650L / playbackSpeed).toLong().coerceIn(60L, 650L))
                 }
-                "SCROLL" -> performSwipe(step)
-                else -> performTap(step)
+                "SCROLL" -> performSwipe(step, session)
+                else -> performTap(step, session)
             }
-        }, (step.delay / playbackSpeed).toLong().coerceIn(60L, 20000L))
+        }, (step.delay / playbackSpeed).toLong().coerceIn(15L, 20000L))
     }
 
-    private fun performTap(step: Step) {
+    private fun performTap(step: Step, session: Int) {
         if (android.os.Build.VERSION.SDK_INT >= 24) {
             val path = Path().apply { moveTo(step.x, step.y) }
             val gesture = GestureDescription.Builder()
                 .addStroke(GestureDescription.StrokeDescription(path, 0, 70))
                 .build()
             dispatchGesture(gesture, object : GestureResultCallback() {
-                override fun onCompleted(gestureDescription: GestureDescription?) { runNext() }
-                override fun onCancelled(gestureDescription: GestureDescription?) { runNext() }
+                override fun onCompleted(gestureDescription: GestureDescription?) { runNext(session) }
+                override fun onCancelled(gestureDescription: GestureDescription?) { runNext(session) }
             }, null)
         } else {
             // Android 6 (API 23) has no dispatchGesture(). Try the accessible node at the
             // recorded coordinates and click it or its nearest clickable parent.
             val clicked = clickNodeAt(rootInActiveWindow, step.x.toInt(), step.y.toInt())
             if (!clicked) status?.text = "اندروید ۶: این نقطه کلیک‌پذیرِ دسترس‌پذیر نیست"
-            handler.postDelayed({ runNext() }, 150L)
+            handler.postDelayed({ runNext(session) }, 150L)
         }
     }
 
@@ -396,7 +410,7 @@ class MacroAccessibilityService : AccessibilityService() {
         return false
     }
 
-    private fun performSwipe(step: Step) {
+    private fun performSwipe(step: Step, session: Int) {
         val left = max(0, step.left)
         val right = max(left + 2, step.right)
         val top = max(0, step.top)
@@ -422,14 +436,14 @@ class MacroAccessibilityService : AccessibilityService() {
         val path = Path().apply { moveTo(x, startY); lineTo(x, endY) }
         // Approximate the recorded pace: intervals are recorded between steps; use a
         // bounded duration so a quick recorded scroll does not replay as a slow drag.
-        val duration = ((step.delay * 0.65f) / playbackSpeed).toLong().coerceIn(60L, 1600L)
+        val duration = ((step.delay * 0.65f) / playbackSpeed).toLong().coerceIn(30L, 1600L)
         if (android.os.Build.VERSION.SDK_INT >= 24) {
             val gesture = GestureDescription.Builder()
                 .addStroke(GestureDescription.StrokeDescription(path, 0, duration))
                 .build()
             dispatchGesture(gesture, object : GestureResultCallback() {
-                override fun onCompleted(gestureDescription: GestureDescription?) { runNext() }
-                override fun onCancelled(gestureDescription: GestureDescription?) { runNext() }
+                override fun onCompleted(gestureDescription: GestureDescription?) { runNext(session) }
+                override fun onCancelled(gestureDescription: GestureDescription?) { runNext(session) }
             }, null)
         } else {
             val root = rootInActiveWindow
@@ -441,7 +455,7 @@ class MacroAccessibilityService : AccessibilityService() {
                 performScrollOnNode(root, forward)
             root?.recycle()
             if (!scrolled) status?.text = "اندروید ۶: این صفحه اسکرول قابل‌دسترسی ندارد؛ ممکن است در این برنامه کار نکند"
-            handler.postDelayed({ runNext() }, duration)
+            handler.postDelayed({ runNext(session) }, duration)
         }
     }
 
@@ -479,8 +493,12 @@ class MacroAccessibilityService : AccessibilityService() {
         return false
     }
 
+    private fun formatSpeed(value: Float): String =
+        String.format(java.util.Locale.US, "%.2f", value).trimEnd('0').trimEnd('.')
+
     private fun updateSpeedLabel() {
-        speedLabel?.text = "سرعت: ${String.format(java.util.Locale.US, "%.2f", playbackSpeed).trimEnd('0').trimEnd('.')}×"
+        speedLabel?.text = "سرعت: ${formatSpeed(playbackSpeed)}×"
+        // Persist immediately, and never reset this value when Stop is pressed.
         getSharedPreferences("touch_loop", MODE_PRIVATE).edit().putFloat("playback_speed", playbackSpeed).apply()
     }
 
@@ -543,8 +561,10 @@ class MacroAccessibilityService : AccessibilityService() {
     }
 
     private fun stopPlayback() {
+        // Invalidate the current playback session so delayed callbacks from an old run
+        // cannot restart it after Stop or duplicate steps after Play is pressed again.
         playing = false
-        handler.removeCallbacksAndMessages(null)
+        playbackToken++
     }
 
     private fun stopAll() {
