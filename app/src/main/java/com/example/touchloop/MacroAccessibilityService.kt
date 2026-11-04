@@ -1,28 +1,33 @@
+
 package com.example.touchloop
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
+import android.graphics.PixelFormat
 import android.graphics.Rect
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
-import android.view.WindowManager
 import android.view.ViewConfiguration
-import android.view.accessibility.AccessibilityNodeInfo
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
 class MacroAccessibilityService : AccessibilityService() {
+
     data class Step(
         val kind: String,
         val x: Float = 0f,
@@ -37,33 +42,59 @@ class MacroAccessibilityService : AccessibilityService() {
 
     private val handler = Handler(Looper.getMainLooper())
     private val steps = mutableListOf<Step>()
+
     private var recording = false
     private var playing = false
     private var playbackToken = 0
     private var playIndex = 0
     private var lastEventAt = 0L
+
     private var panel: View? = null
     private var bubble: View? = null
     private var panelParams: WindowManager.LayoutParams? = null
     private var bubbleParams: WindowManager.LayoutParams? = null
     private var panelCollapsed = false
+
+    private var panelWidthDp = 220
+    private var panelHeightDp = 0
+
     private var playbackSpeed = 1.0f
     private var speedLabel: TextView? = null
+    private var status: TextView? = null
     private var pointPicker: View? = null
     private var ignoreEventsUntil = 0L
-    private lateinit var wm: WindowManager
-    private var status: TextView? = null
 
-    // Accessibility may emit several scroll events for one finger swipe.
-    // Debounce them so one user scroll becomes one replay step.
+    private lateinit var wm: WindowManager
+
     private var pendingScroll: Step? = null
-    private val flushScrollRunnable = Runnable { flushPendingScroll() }
+
+    private val flushScrollRunnable = Runnable {
+        flushPendingScroll()
+    }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
         loadMacro()
-        playbackSpeed = getSharedPreferences("touch_loop", MODE_PRIVATE).getFloat("playback_speed", 1.0f).coerceIn(0.25f, 8.0f)
+
+        val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
+
+        playbackSpeed = prefs.getFloat(
+            "playback_speed",
+            1.0f
+        ).coerceIn(0.25f, 8.0f)
+
+        panelWidthDp = prefs.getInt(
+            "panel_width_dp",
+            220
+        ).coerceIn(180, 360)
+
+        panelHeightDp = prefs.getInt(
+            "panel_height_dp",
+            0
+        ).coerceIn(0, 700)
+
         showPanel()
         updateSpeedLabel()
     }
@@ -72,22 +103,39 @@ class MacroAccessibilityService : AccessibilityService() {
         if (event == null || !recording || playing) return
         if (System.currentTimeMillis() < ignoreEventsUntil) return
         if (event.packageName?.toString() == packageName) return
-        if (event.eventType != AccessibilityEvent.TYPE_VIEW_CLICKED &&
-            event.eventType != AccessibilityEvent.TYPE_VIEW_SCROLLED) return
+
+        if (
+            event.eventType != AccessibilityEvent.TYPE_VIEW_CLICKED &&
+            event.eventType != AccessibilityEvent.TYPE_VIEW_SCROLLED
+        ) return
 
         val source = event.source ?: return
         val bounds = Rect()
+
         try {
             source.getBoundsInScreen(bounds)
         } finally {
             source.recycle()
         }
+
         if (bounds.width() <= 0 || bounds.height() <= 0) return
 
+        val now = System.currentTimeMillis()
+
+        val delay = if (lastEventAt == 0L) {
+            350L
+        } else {
+            (now - lastEventAt).coerceIn(120L, 5000L)
+        }
+
         if (event.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED) {
-            val now = System.currentTimeMillis()
-            val delay = if (lastEventAt == 0L) 350L else (now - lastEventAt).coerceIn(120L, 5000L)
-            pendingScroll = Step(
+            val delta = if (Build.VERSION.SDK_INT >= 28) {
+                event.scrollDeltaY
+            } else {
+                0
+            }
+
+            val newScroll = Step(
                 kind = "SCROLL",
                 x = bounds.exactCenterX(),
                 y = bounds.exactCenterY(),
@@ -96,15 +144,53 @@ class MacroAccessibilityService : AccessibilityService() {
                 right = bounds.right,
                 bottom = bounds.bottom,
                 delay = delay,
-                scrollDeltaY = if (android.os.Build.VERSION.SDK_INT >= 28) event.scrollDeltaY else 0
+                scrollDeltaY = delta
             )
+
+            val oldScroll = pendingScroll
+
+            if (oldScroll != null) {
+                val sameRegion =
+                    abs(oldScroll.x - newScroll.x) < 80f &&
+                    abs(oldScroll.y - newScroll.y) < 100f &&
+                    oldScroll.left == newScroll.left &&
+                    oldScroll.right == newScroll.right &&
+                    oldScroll.top == newScroll.top &&
+                    oldScroll.bottom == newScroll.bottom
+
+                val sameDirection =
+                    oldScroll.scrollDeltaY == 0 ||
+                    newScroll.scrollDeltaY == 0 ||
+                    oldScroll.scrollDeltaY.signCompat() ==
+                    newScroll.scrollDeltaY.signCompat()
+
+                if (sameRegion && sameDirection) {
+                    val accumulated = (
+                        oldScroll.scrollDeltaY.toLong() +
+                        newScroll.scrollDeltaY.toLong()
+                    ).coerceIn(
+                        Int.MIN_VALUE.toLong(),
+                        Int.MAX_VALUE.toLong()
+                    ).toInt()
+
+                    pendingScroll = newScroll.copy(
+                        scrollDeltaY = accumulated,
+                        delay = oldScroll.delay
+                    )
+                } else {
+                    flushPendingScroll()
+                    pendingScroll = newScroll
+                }
+            } else {
+                pendingScroll = newScroll
+            }
+
             handler.removeCallbacks(flushScrollRunnable)
-            // Flush sooner so separate quick swipes are less likely to merge into one step.
-            handler.postDelayed(flushScrollRunnable, 140L)
+            handler.postDelayed(flushScrollRunnable, 180L)
         } else {
-            // Keep the sequence correct if a click immediately follows a scroll.
             handler.removeCallbacks(flushScrollRunnable)
             flushPendingScroll()
+
             addRecordedStep(
                 Step(
                     kind = "TAP",
@@ -113,509 +199,1158 @@ class MacroAccessibilityService : AccessibilityService() {
                     left = bounds.left,
                     top = bounds.top,
                     right = bounds.right,
-                    bottom = bounds.bottom
+                    bottom = bounds.bottom,
+                    delay = delay
                 )
             )
         }
     }
 
+    private fun Int.signCompat(): Int = when {
+        this > 0 -> 1
+        this < 0 -> -1
+        else -> 0
+    }
+
     private fun flushPendingScroll() {
         val scroll = pendingScroll ?: return
         pendingScroll = null
-        if (recording && !playing) addRecordedStep(scroll)
+
+        if (recording && !playing) {
+            addRecordedStep(scroll)
+        }
     }
 
     private fun addRecordedStep(step: Step) {
         steps.add(step)
         lastEventAt = System.currentTimeMillis()
-        status?.text = "ضبط: ${steps.size} مرحله"
+
+        status?.text = if (recording) {
+            "در حال ضبط • ${steps.size} مرحله"
+        } else {
+            "${steps.size} مرحله"
+        }
     }
 
     override fun onInterrupt() {
         stopAll()
     }
 
+    private fun dp(value: Int): Int =
+        (value * resources.displayMetrics.density).toInt()
+
     private fun showPanel() {
         if (panel != null) return
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setPadding(6, 6, 6, 6)
-            setBackgroundColor(0xEE202124.toInt())
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            setBackgroundColor(0xF221252D.toInt())
         }
+
+        val header = TextView(this).apply {
+            text = "☰  TOUCH LOOP"
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            setBackgroundColor(0xFF30394A.toInt())
+            contentDescription = "برای جابه‌جایی پنل بکشید"
+        }
+
         status = TextView(this).apply {
             text = "Touch Loop آماده است"
             setTextColor(0xFFFFFFFF.toInt())
-            textSize = 10f
+            textSize = 12f
             gravity = Gravity.CENTER
+            setPadding(dp(4), dp(8), dp(4), dp(8))
         }
-        fun button(label: String, action: () -> Unit) = Button(this).apply {
-            text = label
-            textSize = 10f
-            minimumHeight = (30 * resources.displayMetrics.density).toInt()
-            setPadding(4, 1, 4, 1)
-            isAllCaps = false
-            setOnClickListener { action() }
+
+        fun button(label: String, action: () -> Unit) =
+            Button(this).apply {
+                text = label
+                textSize = 11f
+                minimumHeight = dp(36)
+                minHeight = dp(36)
+                setPadding(dp(4), dp(2), dp(4), dp(2))
+                isAllCaps = false
+                setOnClickListener { action() }
+            }
+
+        // جابه‌جایی پنل بدون نیاز به شناسه در فایل منابع
+        var panelDragData: FloatArray? = null
+
+        header.setOnTouchListener { _, event ->
+            val params = panelParams
+                ?: return@setOnTouchListener false
+
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    panelDragData = floatArrayOf(
+                        event.rawX,
+                        event.rawY,
+                        params.x.toFloat(),
+                        params.y.toFloat()
+                    )
+                    true
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    val data = panelDragData
+                        ?: return@setOnTouchListener true
+
+                    val dx = (event.rawX - data[0]).toInt()
+                    val dy = (event.rawY - data[1]).toInt()
+
+                    val screenWidth =
+                        resources.displayMetrics.widthPixels
+                    val screenHeight =
+                        resources.displayMetrics.heightPixels
+
+                    params.x = (data[2].toInt() + dx).coerceIn(
+                        0,
+                        (screenWidth - params.width).coerceAtLeast(0)
+                    )
+
+                    params.y = (data[3].toInt() + dy).coerceIn(
+                        0,
+                        (screenHeight - dp(60)).coerceAtLeast(0)
+                    )
+
+                    try {
+                        wm.updateViewLayout(root, params)
+                    } catch (_: Exception) {
+                    }
+
+                    true
+                }
+
+                MotionEvent.ACTION_UP,
+                MotionEvent.ACTION_CANCEL -> {
+                    panelDragData = null
+                    true
+                }
+
+                else -> true
+            }
         }
+
+        root.addView(header)
         root.addView(status)
-        root.addView(button("● Record") {
+
+        root.addView(button("●  ضبط ماکرو") {
             stopPlayback()
+
             handler.removeCallbacks(flushScrollRunnable)
             pendingScroll = null
+
             steps.clear()
             recording = true
             lastEventAt = 0L
+
             status?.text = "در حال ضبط…"
         })
-        root.addView(button("＋ ثبت کلیک دستی") {
+
+        root.addView(button("＋  ثبت کلیک دستی") {
             if (!recording || playing) {
-                status?.text = "برای ثبت کلیک دستی، اول Record را بزن"
+                status?.text = "ابتدا ضبط را شروع کن"
             } else {
                 showPointPicker()
             }
         })
-        root.addView(button("↩ بازگشت / ثبت خروج") {
+
+        root.addView(button("↩  ثبت بازگشت") {
             if (recording && !playing) {
                 handler.removeCallbacks(flushScrollRunnable)
                 flushPendingScroll()
+
                 addRecordedStep(Step(kind = "BACK"))
-                status?.text = "مرحله بازگشت ثبت شد (${steps.size})"
-                // Perform the same back action now, so recording continues from the list screen.
                 performGlobalAction(GLOBAL_ACTION_BACK)
             } else if (playing) {
-                status?.text = "برای خروج از پخش، Stop را بزن"
+                status?.text = "برای توقف پخش، Stop را بزن"
             } else {
                 performGlobalAction(GLOBAL_ACTION_BACK)
             }
         })
-        root.addView(button("■ Stop") {
+
+        root.addView(button("■  توقف و ذخیره") {
             if (recording) {
                 handler.removeCallbacks(flushScrollRunnable)
                 flushPendingScroll()
             }
+
             recording = false
             stopPlayback()
             saveMacro()
-            status?.text = "متوقف شد؛ ${steps.size} مرحله ذخیره شد"
+
+            status?.text = "ذخیره شد • ${steps.size} مرحله"
         })
-        root.addView(button("▶ Play loop") {
+
+        root.addView(button("▶  پخش تکراری") {
             if (recording) {
                 handler.removeCallbacks(flushScrollRunnable)
                 flushPendingScroll()
             }
+
             recording = false
+            stopPlayback()
             saveMacro()
+
             if (steps.isEmpty()) {
-                status?.text = "اول یک ماکرو ضبط کن"
+                status?.text = "ابتدا ماکرو ضبط کن"
             } else {
-                stopPlayback()
                 playbackToken++
                 playing = true
                 playIndex = 0
-                status?.text = "در حال تکرار…"
+                status?.text = "در حال پخش…"
                 runNext(playbackToken)
             }
         })
+
         val speedRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
         }
-        speedRow.addView(button("− سرعت") {
-            playbackSpeed = (playbackSpeed / 1.25f).coerceAtLeast(0.25f)
-            updateSpeedLabel()
-        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+
         speedLabel = TextView(this).apply {
-            text = "سرعت: ${formatSpeed(playbackSpeed)}×"
-            textSize = 10f
+            textSize = 11f
             setTextColor(0xFFFFFFFF.toInt())
             gravity = Gravity.CENTER
-            setPadding(8, 0, 8, 0)
+            setPadding(dp(4), dp(4), dp(4), dp(4))
         }
-        speedRow.addView(speedLabel, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        speedRow.addView(button("سرعت +") {
-            playbackSpeed = (playbackSpeed * 1.25f).coerceAtMost(8.0f)
-            updateSpeedLabel()
-        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+
+        speedRow.addView(
+            button("−") {
+                playbackSpeed =
+                    (playbackSpeed / 1.25f).coerceAtLeast(0.25f)
+                updateSpeedLabel()
+            },
+            LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1f
+            )
+        )
+
+        speedRow.addView(
+            speedLabel,
+            LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1.5f
+            )
+        )
+
+        speedRow.addView(
+            button("+") {
+                playbackSpeed =
+                    (playbackSpeed * 1.25f).coerceAtMost(8.0f)
+                updateSpeedLabel()
+            },
+            LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1f
+            )
+        )
+
         root.addView(speedRow)
-        root.addView(button("◉ تبدیل به حباب") { collapseToBubble() })
-        root.addView(button("× بستن پنل") { removePanel() })
+
+        val resizeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+
+        resizeRow.addView(
+            button("عرض −") {
+                panelWidthDp = (panelWidthDp - 20).coerceAtLeast(180)
+                updatePanelSize()
+            },
+            LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1f
+            )
+        )
+
+        resizeRow.addView(
+            button("عرض +") {
+                panelWidthDp = (panelWidthDp + 20).coerceAtMost(360)
+                updatePanelSize()
+            },
+            LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1f
+            )
+        )
+
+        root.addView(resizeRow)
+
+        val heightRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+
+        heightRow.addView(
+            button("ارتفاع −") {
+                panelHeightDp = (panelHeightDp - 40).coerceAtLeast(0)
+                updatePanelSize()
+            },
+            LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1f
+            )
+        )
+
+        heightRow.addView(
+            button("ارتفاع +") {
+                panelHeightDp = (panelHeightDp + 40).coerceAtMost(700)
+                updatePanelSize()
+            },
+            LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1f
+            )
+        )
+
+        root.addView(heightRow)
+
+        root.addView(button("◉  تبدیل به حباب") {
+            collapseToBubble()
+        })
+
+        root.addView(button("×  بستن پنل") {
+            removePanel()
+        })
+
+        val width = dp(panelWidthDp)
+        val height = if (panelHeightDp == 0) {
+            WindowManager.LayoutParams.WRAP_CONTENT
+        } else {
+            dp(panelHeightDp)
+        }
+
         val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            width,
+            height,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            android.graphics.PixelFormat.TRANSLUCENT
+            PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.END
-            x = 12
-            y = 140
+            gravity = Gravity.TOP or Gravity.START
+            x = dp(12)
+            y = dp(140)
         }
+
         panel = root
         panelParams = params
-        try { wm.addView(root, params) } catch (_: Exception) { panel = null; panelParams = null }
+
+        try {
+            wm.addView(root, params)
+            updateSpeedLabel()
+        } catch (_: Exception) {
+            panel = null
+            panelParams = null
+        }
     }
 
-    /**
-     * Lets the user mark an exact screen coordinate without enabling touch exploration.
-     * The overlay temporarily catches one tap, records its screen position, then replays
-     * that tap once so the target app still opens the selected item.
-     */
+    private fun updatePanelSize() {
+        val params = panelParams ?: return
+
+        params.width = dp(panelWidthDp)
+        params.height = if (panelHeightDp == 0) {
+            WindowManager.LayoutParams.WRAP_CONTENT
+        } else {
+            dp(panelHeightDp)
+        }
+
+        try {
+            panel?.let { wm.updateViewLayout(it, params) }
+        } catch (_: Exception) {
+        }
+
+        getSharedPreferences("touch_loop", MODE_PRIVATE)
+            .edit()
+            .putInt("panel_width_dp", panelWidthDp)
+            .putInt("panel_height_dp", panelHeightDp)
+            .apply()
+    }
+
     private fun showPointPicker() {
         if (pointPicker != null) return
+
         val root = FrameLayout(this).apply {
             setBackgroundColor(0x22000000)
         }
+
         val hint = TextView(this).apply {
-            text = "برای ثبت کلیک، روی محل موردنظر بزنید؛ لمس بعد از ثبت اجرا می‌شود."
+            text = "برای ثبت کلیک، روی محل موردنظر بزن."
             textSize = 16f
             setTextColor(0xFFFFFFFF.toInt())
-            setPadding(18, 18, 18, 18)
+            setPadding(dp(18), dp(18), dp(18), dp(18))
             setBackgroundColor(0xE6202124.toInt())
         }
-        val hintParams = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.TOP
-        ).apply { topMargin = 58 }
-        root.addView(hint, hintParams)
+
+        root.addView(
+            hint,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP
+            )
+        )
+
         val cancel = Button(this).apply {
             text = "لغو انتخاب"
             setOnClickListener {
                 removePointPicker()
-                status?.text = "انتخاب نقطه لغو شد"
+                status?.text = "انتخاب لغو شد"
             }
         }
-        val cancelParams = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.TOP or Gravity.END
+
+        root.addView(
+            cancel,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.END
+            )
         )
-        root.addView(cancel, cancelParams)
+
         root.setOnTouchListener { _, event ->
-            if (event.action == MotionEvent.ACTION_UP && pointPicker === root) {
+            if (
+                event.action == MotionEvent.ACTION_UP &&
+                pointPicker === root
+            ) {
                 val x = event.rawX
                 val y = event.rawY
+
                 removePointPicker()
-                addRecordedStep(Step(kind = "TAP", x = x, y = y, delay = 350L))
-                // Avoid recording the accessibility click generated by our own replay tap.
-                ignoreEventsUntil = System.currentTimeMillis() + 800L
+
+                addRecordedStep(
+                    Step(
+                        kind = "TAP",
+                        x = x,
+                        y = y,
+                        delay = 350L
+                    )
+                )
+
+                ignoreEventsUntil =
+                    System.currentTimeMillis() + 800L
+
                 handler.postDelayed({
-                    if (android.os.Build.VERSION.SDK_INT >= 24) {
-                        val path = Path().apply { moveTo(x, y) }
-                        val gesture = GestureDescription.Builder()
-                            .addStroke(GestureDescription.StrokeDescription(path, 0, 70))
-                            .build()
-                        dispatchGesture(gesture, null, null)
-                    } else {
-                        val rootWindow = rootInActiveWindow
-                        val clicked = clickNodeAt(rootWindow, x.toInt(), y.toInt())
-                        rootWindow?.recycle()
-                        if (!clicked) status?.text = "اندروید ۶: این مورد کلیک‌پذیرِ دسترس‌پذیر نیست"
+                    dispatchTap(x, y) {
+                        status?.text = "کلیک ثبت شد"
                     }
                 }, 100L)
+
                 true
             } else {
                 true
             }
         }
+
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            android.graphics.PixelFormat.TRANSLUCENT
-        ).apply { gravity = Gravity.TOP or Gravity.START }
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+        }
+
         pointPicker = root
+
         try {
             wm.addView(root, params)
-            status?.text = "محل کلیک را روی صفحه انتخاب کن"
+            status?.text = "محل کلیک را انتخاب کن"
         } catch (_: Exception) {
             pointPicker = null
-            status?.text = "انتخاب نقطه باز نشد؛ دوباره تلاش کن"
+            status?.text = "انتخاب نقطه باز نشد"
         }
     }
 
     private fun removePointPicker() {
-        pointPicker?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+        pointPicker?.let {
+            try {
+                wm.removeView(it)
+            } catch (_: Exception) {
+            }
+        }
+
         pointPicker = null
     }
 
     private fun runNext(session: Int = playbackToken) {
         if (!playing || session != playbackToken || steps.isEmpty()) return
-        // A short, speed-scaled pause between full loops. This is independent from Stop,
-        // so stopping playback never changes the selected speed.
+
         if (playIndex >= steps.size) {
             playIndex = 0
-            val loopGap = (100L / playbackSpeed).toLong().coerceIn(20L, 100L)
-            handler.postDelayed({ if (playing && session == playbackToken) runNext(session) }, loopGap)
+
+            val gap = (100L / playbackSpeed)
+                .toLong()
+                .coerceIn(20L, 100L)
+
+            handler.postDelayed({
+                if (playing && session == playbackToken) {
+                    runNext(session)
+                }
+            }, gap)
+
             return
         }
+
         val step = steps[playIndex++]
+
+        val delay = (step.delay / playbackSpeed)
+            .toLong()
+            .coerceIn(15L, 20000L)
+
         handler.postDelayed({
-            if (!playing || session != playbackToken) return@postDelayed
+            if (!playing || session != playbackToken) {
+                return@postDelayed
+            }
+
             when (step.kind) {
                 "BACK" -> {
                     performGlobalAction(GLOBAL_ACTION_BACK)
-                    // Allow the app to finish its navigation transition before the next step.
-                    handler.postDelayed({ runNext(session) }, (650L / playbackSpeed).toLong().coerceIn(60L, 650L))
+
+                    handler.postDelayed({
+                        runNext(session)
+                    }, (650L / playbackSpeed)
+                        .toLong()
+                        .coerceIn(60L, 650L))
                 }
+
                 "SCROLL" -> performSwipe(step, session)
-                else -> performTap(step, session)
+                "TAP" -> performTap(step, session)
+                else -> runNext(session)
             }
-        }, (step.delay / playbackSpeed).toLong().coerceIn(15L, 20000L))
+        }, delay)
+    }
+
+    private fun dispatchTap(
+        x: Float,
+        y: Float,
+        onDone: (() -> Unit)? = null
+    ) {
+        if (Build.VERSION.SDK_INT >= 24) {
+            val path = Path().apply {
+                moveTo(x, y)
+            }
+
+            val gesture = GestureDescription.Builder()
+                .addStroke(
+                    GestureDescription.StrokeDescription(path, 0, 70L)
+                )
+                .build()
+
+            dispatchGesture(
+                gesture,
+                object : GestureResultCallback() {
+                    override fun onCompleted(
+                        gestureDescription: GestureDescription?
+                    ) {
+                        onDone?.invoke()
+                    }
+
+                    override fun onCancelled(
+                        gestureDescription: GestureDescription?
+                    ) {
+                        onDone?.invoke()
+                    }
+                },
+                null
+            )
+        } else {
+            val root = rootInActiveWindow
+
+            try {
+                if (!clickNodeAt(root, x.toInt(), y.toInt())) {
+                    status?.text =
+                        "این کلیک در اندروید ۶ قابل اجرا نیست"
+                }
+            } finally {
+                root?.recycle()
+            }
+
+            onDone?.invoke()
+        }
     }
 
     private fun performTap(step: Step, session: Int) {
-        if (android.os.Build.VERSION.SDK_INT >= 24) {
-            val path = Path().apply { moveTo(step.x, step.y) }
+        if (!playing || session != playbackToken) return
+
+        if (Build.VERSION.SDK_INT >= 24) {
+            val path = Path().apply {
+                moveTo(step.x, step.y)
+            }
+
             val gesture = GestureDescription.Builder()
-                .addStroke(GestureDescription.StrokeDescription(path, 0, 70))
+                .addStroke(
+                    GestureDescription.StrokeDescription(path, 0, 70L)
+                )
                 .build()
-            dispatchGesture(gesture, object : GestureResultCallback() {
-                override fun onCompleted(gestureDescription: GestureDescription?) { runNext(session) }
-                override fun onCancelled(gestureDescription: GestureDescription?) { runNext(session) }
-            }, null)
+
+            dispatchGesture(
+                gesture,
+                object : GestureResultCallback() {
+                    override fun onCompleted(
+                        gestureDescription: GestureDescription?
+                    ) {
+                        runNext(session)
+                    }
+
+                    override fun onCancelled(
+                        gestureDescription: GestureDescription?
+                    ) {
+                        if (playing && session == playbackToken) {
+                            handler.postDelayed(
+                                { runNext(session) },
+                                100L
+                            )
+                        }
+                    }
+                },
+                null
+            )
         } else {
-            // Android 6 (API 23) has no dispatchGesture(). Try the accessible node at the
-            // recorded coordinates and click it or its nearest clickable parent.
-            val clicked = clickNodeAt(rootInActiveWindow, step.x.toInt(), step.y.toInt())
-            if (!clicked) status?.text = "اندروید ۶: این نقطه کلیک‌پذیرِ دسترس‌پذیر نیست"
-            handler.postDelayed({ runNext(session) }, 150L)
+            val root = rootInActiveWindow
+
+            try {
+                if (!clickNodeAt(root, step.x.toInt(), step.y.toInt())) {
+                    status?.text = "کلیک در اندروید ۶ قابل اجرا نیست"
+                }
+            } finally {
+                root?.recycle()
+            }
+
+            handler.postDelayed(
+                { runNext(session) },
+                150L
+            )
         }
     }
 
-    private fun clickNodeAt(node: AccessibilityNodeInfo?, x: Int, y: Int): Boolean {
+    private fun clickNodeAt(
+        node: AccessibilityNodeInfo?,
+        x: Int,
+        y: Int
+    ): Boolean {
         if (node == null) return false
+
         val bounds = Rect()
         node.getBoundsInScreen(bounds)
+
         if (!bounds.contains(x, y)) return false
-        // Search children first to choose the smallest matching item.
+
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            val didClick = try { clickNodeAt(child, x, y) } finally { child.recycle() }
-            if (didClick) return true
+
+            val clicked = try {
+                clickNodeAt(child, x, y)
+            } finally {
+                child.recycle()
+            }
+
+            if (clicked) return true
         }
-        var current: AccessibilityNodeInfo? = AccessibilityNodeInfo.obtain(node)
+
+        var current: AccessibilityNodeInfo? =
+            AccessibilityNodeInfo.obtain(node)
+
         while (current != null) {
-            if (current.isClickable && current.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+            if (
+                current.isClickable &&
+                current.performAction(
+                    AccessibilityNodeInfo.ACTION_CLICK
+                )
+            ) {
                 current.recycle()
                 return true
             }
+
             val parent = current.parent
             current.recycle()
             current = parent
         }
+
         return false
     }
 
     private fun performSwipe(step: Step, session: Int) {
-        val left = max(0, step.left)
-        val right = max(left + 2, step.right)
-        val top = max(0, step.top)
-        val bottom = max(top + 2, step.bottom)
-        val x = min(right - 2f, max(left + 2f, step.x))
-        val height = (bottom - top).toFloat().coerceAtLeast(4f)
+        if (!playing || session != playbackToken) return
 
-        // Replay a much longer swipe than the old fixed 160 px movement. Accessibility
-        // reports content scroll delta, not the user's exact finger path, so use it as
-        // a guide and fall back to most of the scrollable viewport height.
-        val wantedDistance = if (step.scrollDeltaY != 0) kotlin.math.abs(step.scrollDeltaY).toFloat() * 1.25f
-            else height * 0.72f
-        val distance = wantedDistance.coerceIn(height * 0.45f, height * 0.88f)
-        val centerY = min(bottom - 2f, max(top + 2f, step.y))
-        val delta = if (step.scrollDeltaY < 0) distance else -distance
-        var startY = centerY - delta / 2f
-        var endY = centerY + delta / 2f
-        // Keep both ends inside the detected scrollable area while preserving direction.
-        if (startY < top + 2f) { endY += (top + 2f - startY); startY = top + 2f }
-        if (endY > bottom - 2f) { startY -= (endY - (bottom - 2f)); endY = bottom - 2f }
-        startY = startY.coerceIn(top + 2f, bottom - 2f)
-        endY = endY.coerceIn(top + 2f, bottom - 2f)
-        val path = Path().apply { moveTo(x, startY); lineTo(x, endY) }
-        // Approximate the recorded pace: intervals are recorded between steps; use a
-        // bounded duration so a quick recorded scroll does not replay as a slow drag.
-        val duration = ((step.delay * 0.65f) / playbackSpeed).toLong().coerceIn(30L, 1600L)
-        if (android.os.Build.VERSION.SDK_INT >= 24) {
-            val gesture = GestureDescription.Builder()
-                .addStroke(GestureDescription.StrokeDescription(path, 0, duration))
-                .build()
-            dispatchGesture(gesture, object : GestureResultCallback() {
-                override fun onCompleted(gestureDescription: GestureDescription?) { runNext(session) }
-                override fun onCancelled(gestureDescription: GestureDescription?) { runNext(session) }
-            }, null)
-        } else {
+        if (Build.VERSION.SDK_INT < 24) {
             val root = rootInActiveWindow
-            // On Android 6 dispatchGesture is unavailable. First try the scrollable
-            // node under the recorded scroll point (and its ancestors), then fall back
-            // to any accessible scrollable node in the active window.
             val forward = step.scrollDeltaY >= 0
-            val scrolled = performScrollAtPoint(root, step.x.toInt(), step.y.toInt(), forward) ||
-                performScrollOnNode(root, forward)
-            root?.recycle()
-            if (!scrolled) status?.text = "اندروید ۶: این صفحه اسکرول قابل‌دسترسی ندارد؛ ممکن است در این برنامه کار نکند"
-            handler.postDelayed({ runNext(session) }, duration)
+
+            val scrolled = try {
+                performScrollAtPoint(
+                    root,
+                    step.x.toInt(),
+                    step.y.toInt(),
+                    forward
+                ) || performScrollOnNode(root, forward)
+            } finally {
+                root?.recycle()
+            }
+
+            if (!scrolled) {
+                status?.text = "این صفحه اسکرول قابل‌دسترسی ندارد"
+            }
+
+            handler.postDelayed(
+                { runNext(session) },
+                (step.delay * 0.65f)
+                    .toLong()
+                    .coerceIn(180L, 650L)
+            )
+
+            return
+        }
+
+        val screenWidth = resources.displayMetrics.widthPixels
+        val screenHeight = resources.displayMetrics.heightPixels
+
+        if (screenWidth < 4 || screenHeight < 4) {
+            handler.postDelayed({ runNext(session) }, 200L)
+            return
+        }
+
+        val left = step.left.coerceIn(0, screenWidth - 2)
+        val right = step.right.coerceIn(left + 2, screenWidth)
+        val top = step.top.coerceIn(0, screenHeight - 2)
+        val bottom = step.bottom.coerceIn(top + 2, screenHeight)
+
+        val minY = top + 2f
+        val maxY = bottom - 2f
+        val height = (bottom - top).toFloat().coerceAtLeast(4f)
+        val x = step.x.coerceIn(
+            left.toFloat() + 2f,
+            right.toFloat() - 2f
+        )
+
+        /*
+         * Playback speed affects the delay between steps,
+         * not the duration of the swipe itself.
+         */
+        val estimated = if (step.scrollDeltaY != 0) {
+            abs(step.scrollDeltaY.toFloat())
+        } else {
+            height * 0.78f
+        }
+
+        val distance = min(
+            height * 0.90f,
+            max(height * 0.45f, estimated * 0.65f)
+        )
+
+        val centerY = step.y.coerceIn(minY, maxY)
+        val direction = if (step.scrollDeltaY < 0) 1f else -1f
+
+        var startY = centerY - direction * distance / 2f
+        var endY = centerY + direction * distance / 2f
+
+        startY = startY.coerceIn(minY, maxY)
+        endY = endY.coerceIn(minY, maxY)
+
+        if (abs(startY - endY) < 2f) {
+            startY = if (centerY > (minY + maxY) / 2f) {
+                maxY
+            } else {
+                minY
+            }
+
+            endY = if (startY == minY) maxY else minY
+        }
+
+        val path = Path().apply {
+            moveTo(x, startY)
+            lineTo(x, endY)
+        }
+
+        // مدت حرکت ثابت می‌ماند تا تغییر سرعت باعث کوتاه‌شدن حرکت نشود.
+        val duration = (step.delay * 0.65f)
+            .toLong()
+            .coerceIn(180L, 650L)
+
+        val gesture = GestureDescription.Builder()
+            .addStroke(
+                GestureDescription.StrokeDescription(
+                    path,
+                    0,
+                    duration
+                )
+            )
+            .build()
+
+        val accepted = dispatchGesture(
+            gesture,
+            object : GestureResultCallback() {
+                override fun onCompleted(
+                    gestureDescription: GestureDescription?
+                ) {
+                    if (playing && session == playbackToken) {
+                        runNext(session)
+                    }
+                }
+
+                override fun onCancelled(
+                    gestureDescription: GestureDescription?
+                ) {
+                    if (playing && session == playbackToken) {
+                        status?.text = "اسکرول لغو شد"
+
+                        handler.postDelayed(
+                            { runNext(session) },
+                            150L
+                        )
+                    }
+                }
+            },
+            null
+        )
+
+        if (!accepted && playing && session == playbackToken) {
+            status?.text = "اجرای اسکرول پذیرفته نشد"
+
+            handler.postDelayed(
+                { runNext(session) },
+                250L
+            )
         }
     }
 
-    private fun performScrollAtPoint(node: AccessibilityNodeInfo?, x: Int, y: Int, forward: Boolean): Boolean {
+    private fun performScrollAtPoint(
+        node: AccessibilityNodeInfo?,
+        x: Int,
+        y: Int,
+        forward: Boolean
+    ): Boolean {
         if (node == null) return false
+
         val bounds = Rect()
         node.getBoundsInScreen(bounds)
+
         if (!bounds.contains(x, y)) return false
 
-        // Prefer the most specific node at the recorded point, then let its
-        // scrollable parent handle the action if the child itself cannot scroll.
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            val didScroll = try { performScrollAtPoint(child, x, y, forward) } finally { child.recycle() }
-            if (didScroll) return true
+
+            val scrolled = try {
+                performScrollAtPoint(child, x, y, forward)
+            } finally {
+                child.recycle()
+            }
+
+            if (scrolled) return true
         }
+
         if (node.isScrollable) {
-            val action = if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+            val action = if (forward) {
+                AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+            } else {
+                AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+            }
+
             if (node.performAction(action)) return true
         }
+
         return false
     }
 
-    private fun performScrollOnNode(node: AccessibilityNodeInfo?, forward: Boolean): Boolean {
+    private fun performScrollOnNode(
+        node: AccessibilityNodeInfo?,
+        forward: Boolean
+    ): Boolean {
         if (node == null) return false
+
         if (node.isScrollable) {
-            val action = if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+            val action = if (forward) {
+                AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+            } else {
+                AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+            }
+
             if (node.performAction(action)) return true
         }
+
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            val didScroll = try { performScrollOnNode(child, forward) } finally { child.recycle() }
-            if (didScroll) return true
+
+            val scrolled = try {
+                performScrollOnNode(child, forward)
+            } finally {
+                child.recycle()
+            }
+
+            if (scrolled) return true
         }
+
         return false
     }
 
     private fun formatSpeed(value: Float): String =
-        String.format(java.util.Locale.US, "%.2f", value).trimEnd('0').trimEnd('.')
+        String.format(
+            java.util.Locale.US,
+            "%.2f",
+            value
+        ).trimEnd('0').trimEnd('.')
 
     private fun updateSpeedLabel() {
-        speedLabel?.text = "سرعت: ${formatSpeed(playbackSpeed)}×"
-        // Persist immediately, and never reset this value when Stop is pressed.
-        getSharedPreferences("touch_loop", MODE_PRIVATE).edit().putFloat("playback_speed", playbackSpeed).apply()
+        speedLabel?.text = "سرعت ${formatSpeed(playbackSpeed)}×"
+
+        getSharedPreferences("touch_loop", MODE_PRIVATE)
+            .edit()
+            .putFloat("playback_speed", playbackSpeed)
+            .apply()
     }
 
     private fun collapseToBubble() {
         if (panel == null || panelCollapsed) return
-        val params = panelParams ?: return
-        try { wm.removeView(panel) } catch (_: Exception) {}
+
+        val oldParams = panelParams
+
+        panel?.let {
+            try {
+                wm.removeView(it)
+            } catch (_: Exception) {
+            }
+        }
+
         panel = null
         panelCollapsed = true
+
+        val size = dp(52)
+
         val bubbleView = TextView(this).apply {
             text = "TL"
             textSize = 16f
             gravity = Gravity.CENTER
             setTextColor(0xFFFFFFFF.toInt())
-            setBackgroundColor(0xEE3F51B5.toInt())
-            contentDescription = "Touch Loop؛ برای بازکردن پنل لمس کن و برای جابه‌جایی بکش"
+            setBackgroundColor(0xFF4258A8.toInt())
+            contentDescription =
+                "Touch Loop؛ لمس برای بازکردن پنل و کشیدن برای جابه‌جایی"
         }
-        val size = (48 * resources.displayMetrics.density).toInt()
-        val bp = WindowManager.LayoutParams(
-            size, size, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            android.graphics.PixelFormat.TRANSLUCENT
+
+        val params = WindowManager.LayoutParams(
+            size,
+            size,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = (resources.displayMetrics.widthPixels - size - 12).coerceAtLeast(0)
-            y = 180
+            x = oldParams?.x ?: dp(12)
+            y = oldParams?.y ?: dp(140)
         }
-        bubbleParams = bp
-        var downX = 0f; var downY = 0f; var initialX = 0; var initialY = 0; var moved = false
+
+        bubbleParams = params
+
+        var downX = 0f
+        var downY = 0f
+        var initialX = 0
+        var initialY = 0
+        var moved = false
+
         val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
-        bubbleView.setOnTouchListener { v, event ->
+
+        bubbleView.setOnTouchListener { view, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    downX = event.rawX; downY = event.rawY; initialX = bp.x; initialY = bp.y; moved = false; true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = (event.rawX - downX).toInt(); val dy = (event.rawY - downY).toInt()
-                    if (kotlin.math.abs(dx) > touchSlop || kotlin.math.abs(dy) > touchSlop) moved = true
-                    if (moved) {
-                        bp.x = (initialX + dx).coerceIn(0, (resources.displayMetrics.widthPixels - size).coerceAtLeast(0))
-                        bp.y = (initialY + dy).coerceIn(0, (resources.displayMetrics.heightPixels - size).coerceAtLeast(0))
-                        try { wm.updateViewLayout(v, bp) } catch (_: Exception) {}
-                    }
+                    downX = event.rawX
+                    downY = event.rawY
+                    initialX = params.x
+                    initialY = params.y
+                    moved = false
                     true
                 }
-                MotionEvent.ACTION_UP -> { if (!moved) expandFromBubble(); true }
+
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = (event.rawX - downX).toInt()
+                    val dy = (event.rawY - downY).toInt()
+
+                    if (abs(dx) > touchSlop || abs(dy) > touchSlop) {
+                        moved = true
+                    }
+
+                    if (moved) {
+                        params.x = (initialX + dx).coerceIn(
+                            0,
+                            (
+                                resources.displayMetrics.widthPixels - size
+                            ).coerceAtLeast(0)
+                        )
+
+                        params.y = (initialY + dy).coerceIn(
+                            0,
+                            (
+                                resources.displayMetrics.heightPixels - size
+                            ).coerceAtLeast(0)
+                        )
+
+                        try {
+                            wm.updateViewLayout(view, params)
+                        } catch (_: Exception) {
+                        }
+                    }
+
+                    true
+                }
+
+                MotionEvent.ACTION_UP -> {
+                    if (!moved) expandFromBubble()
+                    true
+                }
+
                 else -> true
             }
         }
+
         bubble = bubbleView
-        try { wm.addView(bubbleView, bp) } catch (_: Exception) { bubble = null; panelCollapsed = false; showPanel() }
+
+        try {
+            wm.addView(bubbleView, params)
+        } catch (_: Exception) {
+            bubble = null
+            panelCollapsed = false
+            showPanel()
+        }
     }
 
     private fun expandFromBubble() {
-        bubble?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+        bubble?.let {
+            try {
+                wm.removeView(it)
+            } catch (_: Exception) {
+            }
+        }
+
+        val oldParams = bubbleParams
+
         bubble = null
         bubbleParams = null
         panelCollapsed = false
+
         showPanel()
+
+        val params = panelParams
+        if (params != null && oldParams != null) {
+            params.x = oldParams.x
+            params.y = oldParams.y
+
+            try {
+                panel?.let { wm.updateViewLayout(it, params) }
+            } catch (_: Exception) {
+            }
+        }
     }
 
+    /*
+     * فقط پخش را متوقف می‌کنیم.
+     * حذف تمام callbackهای Handler ممکن بود عملیات ضبط و ذخیره‌سازی
+     * یا callbackهای مستقل را نیز مختل کند.
+     * playbackToken باعث بی‌اثرشدن callbackهای قدیمی پخش می‌شود.
+     */
     private fun stopPlayback() {
-        // Invalidate the current playback session so delayed callbacks from an old run
-        // cannot restart it after Stop or duplicate steps after Play is pressed again.
         playing = false
         playbackToken++
     }
 
     private fun stopAll() {
         recording = false
+
         handler.removeCallbacks(flushScrollRunnable)
         pendingScroll = null
+
         stopPlayback()
         saveMacro()
     }
 
     private fun saveMacro() {
-        val arr = JSONArray()
-        steps.forEach { s ->
-            arr.put(JSONObject().apply {
-                put("kind", s.kind); put("x", s.x); put("y", s.y)
-                put("left", s.left); put("top", s.top); put("right", s.right); put("bottom", s.bottom)
-                put("delay", s.delay); put("scrollDeltaY", s.scrollDeltaY)
-            })
+        val array = JSONArray()
+
+        steps.forEach { step ->
+            array.put(
+                JSONObject().apply {
+                    put("kind", step.kind)
+                    put("x", step.x)
+                    put("y", step.y)
+                    put("left", step.left)
+                    put("top", step.top)
+                    put("right", step.right)
+                    put("bottom", step.bottom)
+                    put("delay", step.delay)
+                    put("scrollDeltaY", step.scrollDeltaY)
+                }
+            )
         }
-        getSharedPreferences("touch_loop", MODE_PRIVATE).edit().putString("macro", arr.toString()).apply()
+
+        getSharedPreferences("touch_loop", MODE_PRIVATE)
+            .edit()
+            .putString("macro", array.toString())
+            .apply()
     }
 
     private fun loadMacro() {
         steps.clear()
-        val raw = getSharedPreferences("touch_loop", MODE_PRIVATE).getString("macro", null) ?: return
+
+        val raw = getSharedPreferences("touch_loop", MODE_PRIVATE)
+            .getString("macro", null) ?: return
+
         try {
-            val arr = JSONArray(raw)
-            for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
+            val array = JSONArray(raw)
+
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+
                 steps.add(
                     Step(
-                        kind = o.getString("kind"),
-                        x = o.optDouble("x", 0.0).toFloat(),
-                        y = o.optDouble("y", 0.0).toFloat(),
-                        left = o.optInt("left", 0),
-                        top = o.optInt("top", 0),
-                        right = o.optInt("right", 0),
-                        bottom = o.optInt("bottom", 0),
-                        delay = o.optLong("delay", 350L),
-                        scrollDeltaY = o.optInt("scrollDeltaY", 0)
+                        kind = obj.getString("kind"),
+                        x = obj.optDouble("x", 0.0).toFloat(),
+                        y = obj.optDouble("y", 0.0).toFloat(),
+                        left = obj.optInt("left", 0),
+                        top = obj.optInt("top", 0),
+                        right = obj.optInt("right", 0),
+                        bottom = obj.optInt("bottom", 0),
+                        delay = obj.optLong("delay", 350L),
+                        scrollDeltaY = obj.optInt("scrollDeltaY", 0)
                     )
                 )
             }
-        } catch (_: Exception) { steps.clear() }
+        } catch (_: Exception) {
+            steps.clear()
+        }
     }
 
     private fun removePanel() {
         stopAll()
         removePointPicker()
-        panel?.let { try { wm.removeView(it) } catch (_: Exception) {} }
-        bubble?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+
+        panel?.let {
+            try {
+                wm.removeView(it)
+            } catch (_: Exception) {
+            }
+        }
+
+        bubble?.let {
+            try {
+                wm.removeView(it)
+            } catch (_: Exception) {
+            }
+        }
+
         panel = null
         bubble = null
         panelParams = null
