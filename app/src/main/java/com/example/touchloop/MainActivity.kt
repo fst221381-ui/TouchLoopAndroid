@@ -216,28 +216,33 @@ class MainActivity : Activity() {
                 val text = stream?.bufferedReader()
                     ?.use { it.readText() } ?: "{}"
 
+                
                 val response = JSONObject(text)
                 val token = response.optString("access_token", "")
 
                 runOnUiThread {
-    if (responseCode in 200..299 && token.isNotBlank()) {
-        adminToken = token
-        passwordInput.text.clear()
-        adminStatus.text =
-            "ورود موفق بود. حالا مدت اعتبار را وارد کن."} 
-                    else {
-        adminToken = null
-        val message = response.optString(
-            "msg",
-            response.optString(
-                "message",
-                response.optString("error_description", "خطای نامشخص")
-            )
-        )
-        adminStatus.text =
-            "خطای واقعی سرور ($responseCode): $message"
-    }
-                 } catch (e: Exception) {
+                    if (responseCode in 200..299 && token.isNotBlank()) {
+                        adminToken = token
+                        passwordInput.text.clear()
+                        adminStatus.text =
+                            "ورود موفق بود. حالا مدت اعتبار را وارد کن."
+                    } else {
+                        adminToken = null
+                        val message = response.optString(
+                            "msg",
+                            response.optString(
+                                "message",
+                                response.optString(
+                                    "error_description",
+                                    "خطای نامشخص"
+                                )
+                            )
+                        )
+                        adminStatus.text =
+                            "خطای واقعی سرور ($responseCode): $message"
+                    }
+                }
+            } catch (e: Exception) {
                 runOnUiThread {
                     adminStatus.text =
                         "اتصال ناموفق بود؛ اینترنت و تنظیمات سرور را بررسی کن."
@@ -247,6 +252,7 @@ class MainActivity : Activity() {
             }
         }.start()
     }
+
 
     private fun createAdminCode() {
         val token = adminToken
