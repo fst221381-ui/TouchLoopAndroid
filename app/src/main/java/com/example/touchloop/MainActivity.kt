@@ -26,10 +26,13 @@ class MainActivity : Activity() {
     private val adminEndpoint =
         "$baseUrl/functions/v1/admin-codes"
 
+    // اطلاعات ثابت حساب مدیر
+    // این مقادیر باید با حساب واقعی Supabase Auth مطابقت داشته باشند.
+    private val ADMIN_EMAIL = "fst221381@gmail.com"
+    private val ADMIN_PASSWORD = "mosavifa"
+
     private lateinit var status: TextView
     private lateinit var codeInput: EditText
-    private lateinit var emailInput: EditText
-    private lateinit var passwordInput: EditText
     private lateinit var daysInput: EditText
     private lateinit var adminStatus: TextView
 
@@ -88,7 +91,9 @@ class MainActivity : Activity() {
         }
         layout.addView(codeInput)
 
-        addButton("فعال‌سازی") { activateCode() }
+        addButton("فعال‌سازی") {
+            activateCode()
+        }
 
         addButton("تنظیمات Accessibility") {
             startActivity(
@@ -107,20 +112,9 @@ class MainActivity : Activity() {
 
         addTitle("پنل مدیریت کدها", 22f)
 
-        emailInput = EditText(this).apply {
-            hint = "ایمیل حساب مدیر"
-            setSingleLine(true)
+        addButton("ورود مدیر") {
+            adminLogin()
         }
-        layout.addView(emailInput)
-
-        passwordInput = EditText(this).apply {
-            hint = "رمز عبور حساب مدیر"
-            setSingleLine(true)
-            inputType = 129
-        }
-        layout.addView(passwordInput)
-
-        addButton("ورود مدیر") { adminLogin() }
 
         daysInput = EditText(this).apply {
             hint = "مدت اعتبار به روز، مثلاً 30"
@@ -129,7 +123,9 @@ class MainActivity : Activity() {
         }
         layout.addView(daysInput)
 
-        addButton("ساخت کد فعال‌سازی") { createAdminCode() }
+        addButton("ساخت کد فعال‌سازی") {
+            createAdminCode()
+        }
 
         adminStatus = TextView(this).apply {
             textSize = 15f
@@ -141,6 +137,7 @@ class MainActivity : Activity() {
 
         addButton("کپی کد ساخته‌شده") {
             val code = generatedCode
+
             if (code.isNullOrBlank()) {
                 adminStatus.text = "هنوز کدی ساخته نشده است."
             } else {
@@ -149,7 +146,10 @@ class MainActivity : Activity() {
                 ) as ClipboardManager
 
                 clipboard.setPrimaryClip(
-                    ClipData.newPlainText("Activation code", code)
+                    ClipData.newPlainText(
+                        "Activation code",
+                        code
+                    )
                 )
 
                 Toast.makeText(
@@ -168,11 +168,17 @@ class MainActivity : Activity() {
     }
 
     private fun adminLogin() {
-        val email = emailInput.text.toString().trim()
-        val password = passwordInput.text.toString()
+        val email = ADMIN_EMAIL.trim()
+        val password = ADMIN_PASSWORD
 
-        if (email.isBlank() || password.isBlank()) {
-            adminStatus.text = "ایمیل و رمز عبور را وارد کن."
+        if (
+            email.isBlank() ||
+            password.isBlank() ||
+            email == "YOUR_ADMIN_EMAIL" ||
+            password == "YOUR_ADMIN_PASSWORD"
+        ) {
+            adminStatus.text =
+                "ابتدا اطلاعات مدیر را در کد تنظیم کن."
             return
         }
 
@@ -182,13 +188,16 @@ class MainActivity : Activity() {
             var connection: HttpURLConnection? = null
 
             try {
-                connection = (URL(
-                    "$baseUrl/auth/v1/token?grant_type=password"
-                ).openConnection() as HttpURLConnection).apply {
+                connection = (
+                    URL(
+                        "$baseUrl/auth/v1/token?grant_type=password"
+                    ).openConnection() as HttpURLConnection
+                ).apply {
                     requestMethod = "POST"
                     connectTimeout = 15000
                     readTimeout = 15000
                     doOutput = true
+
                     setRequestProperty("apikey", apiKey)
                     setRequestProperty(
                         "Content-Type",
@@ -204,9 +213,12 @@ class MainActivity : Activity() {
                 OutputStreamWriter(
                     connection.outputStream,
                     Charsets.UTF_8
-                ).use { it.write(body.toString()) }
+                ).use {
+                    it.write(body.toString())
+                }
 
                 val responseCode = connection.responseCode
+
                 val stream = if (responseCode in 200..299) {
                     connection.inputStream
                 } else {
@@ -216,37 +228,46 @@ class MainActivity : Activity() {
                 val text = stream?.bufferedReader()
                     ?.use { it.readText() } ?: "{}"
 
-                
                 val response = JSONObject(text)
-              adminStatus.text = "HTTP $responseCode: $text"
-                val token = response.optString("access_token", "")
+                val token = response.optString(
+                    "access_token",
+                    ""
+                )
 
                 runOnUiThread {
-                    if (responseCode in 200..299 && token.isNotBlank()) {
+                    if (
+                        responseCode in 200..299 &&
+                        token.isNotBlank()
+                    ) {
                         adminToken = token
-                        passwordInput.text.clear()
+
                         adminStatus.text =
                             "ورود موفق بود. حالا مدت اعتبار را وارد کن."
                     } else {
                         adminToken = null
+
                         val message = response.optString(
                             "msg",
                             response.optString(
                                 "message",
                                 response.optString(
                                     "error_description",
-                                    "خطای نامشخص"
+                                    response.optString(
+                                        "error",
+                                        "خطای نامشخص"
+                                    )
                                 )
                             )
                         )
+
                         adminStatus.text =
-                            "خطای واقعی سرور ($responseCode): $message"
+                            "خطای ورود ($responseCode): $message"
                     }
                 }
             } catch (e: Exception) {
                 runOnUiThread {
                     adminStatus.text =
-                        "اتصال ناموفق بود؛ اینترنت و تنظیمات سرور را بررسی کن."
+                        "اتصال ناموفق بود؛ اینترنت و سرور را بررسی کن."
                 }
             } finally {
                 connection?.disconnect()
@@ -254,16 +275,18 @@ class MainActivity : Activity() {
         }.start()
     }
 
-
     private fun createAdminCode() {
         val token = adminToken
 
         if (token.isNullOrBlank()) {
-            adminStatus.text = "ابتدا با حساب مدیر وارد شو."
+            adminStatus.text =
+                "ابتدا با دکمه ورود مدیر وارد شو."
             return
         }
 
-        val days = daysInput.text.toString().trim().toIntOrNull()
+        val days = daysInput.text.toString()
+            .trim()
+            .toIntOrNull()
 
         if (days == null || days !in 1..3650) {
             daysInput.error = "عدد بین 1 تا 3650 وارد کن"
@@ -276,12 +299,15 @@ class MainActivity : Activity() {
             var connection: HttpURLConnection? = null
 
             try {
-                connection = (URL(adminEndpoint).openConnection()
-                    as HttpURLConnection).apply {
+                connection = (
+                    URL(adminEndpoint).openConnection()
+                        as HttpURLConnection
+                ).apply {
                     requestMethod = "POST"
                     connectTimeout = 15000
                     readTimeout = 15000
                     doOutput = true
+
                     setRequestProperty("apikey", apiKey)
                     setRequestProperty(
                         "Authorization",
@@ -300,9 +326,12 @@ class MainActivity : Activity() {
                 OutputStreamWriter(
                     connection.outputStream,
                     Charsets.UTF_8
-                ).use { it.write(body.toString()) }
+                ).use {
+                    it.write(body.toString())
+                }
 
                 val responseCode = connection.responseCode
+
                 val stream = if (responseCode in 200..299) {
                     connection.inputStream
                 } else {
@@ -313,22 +342,31 @@ class MainActivity : Activity() {
                     ?.use { it.readText() } ?: "{}"
 
                 val response = JSONObject(text)
-                val success = response.optBoolean("success", false)
+                val success = response.optBoolean(
+                    "success",
+                    false
+                )
                 val code = response.optString("code", "")
 
                 runOnUiThread {
-                    if (responseCode in 200..299 &&
-                        success && code.isNotBlank()
+                    if (
+                        responseCode in 200..299 &&
+                        success &&
+                        code.isNotBlank()
                     ) {
                         generatedCode = code
+
                         adminStatus.text =
-                            "کد جدید ساخته شد:\n$code\nاعتبار: $days روز\n" +
-                            "کد را اکنون کپی و نگهداری کن؛ بعداً قابل بازیابی نیست."
+                            "کد جدید ساخته شد:\n$code\n" +
+                            "اعتبار: $days روز\n" +
+                            "کد را کپی و نگهداری کن؛ " +
+                            "بعداً قابل بازیابی نیست."
                     } else {
                         val message = response.optString(
                             "message",
                             "ساخت کد ناموفق بود."
                         )
+
                         adminStatus.text =
                             "خطا ($responseCode): $message"
                     }
@@ -358,7 +396,8 @@ class MainActivity : Activity() {
         ) ?: ""
 
         if (deviceId.length < 8) {
-            status.text = "شناسه گوشی قابل دریافت نیست."
+            status.text =
+                "شناسه گوشی قابل دریافت نیست."
             return
         }
 
@@ -369,12 +408,15 @@ class MainActivity : Activity() {
             var connection: HttpURLConnection? = null
 
             try {
-                connection = (URL(activateEndpoint).openConnection()
-                    as HttpURLConnection).apply {
+                connection = (
+                    URL(activateEndpoint).openConnection()
+                        as HttpURLConnection
+                ).apply {
                     requestMethod = "POST"
                     connectTimeout = 15000
                     readTimeout = 15000
                     doOutput = true
+
                     setRequestProperty("apikey", apiKey)
                     setRequestProperty(
                         "Content-Type",
@@ -390,9 +432,12 @@ class MainActivity : Activity() {
                 OutputStreamWriter(
                     connection.outputStream,
                     Charsets.UTF_8
-                ).use { it.write(body.toString()) }
+                ).use {
+                    it.write(body.toString())
+                }
 
                 val responseCode = connection.responseCode
+
                 val stream = if (responseCode in 200..299) {
                     connection.inputStream
                 } else {
@@ -403,20 +448,43 @@ class MainActivity : Activity() {
                     ?.use { it.readText() } ?: "{}"
 
                 val response = JSONObject(text)
-                val success = response.optBoolean("success", false)
+                val success = response.optBoolean(
+                    "success",
+                    false
+                )
 
                 runOnUiThread {
-                    if (responseCode in 200..299 && success) {
-                        val expiresAt =
-                            response.optString("expires_at", "")
-                        val remaining =
-                            response.optLong("remaining_seconds", 0L)
+                    if (
+                        responseCode in 200..299 &&
+                        success
+                    ) {
+                        val expiresAt = response.optString(
+                            "expires_at",
+                            ""
+                        )
 
-                        if (expiresAt.isNotBlank() && remaining > 0L) {
+                        val remaining = response.optLong(
+                            "remaining_seconds",
+                            0L
+                        )
+
+                        if (
+                            expiresAt.isNotBlank() &&
+                            remaining > 0L
+                        ) {
                             prefs.edit()
-                                .putBoolean("license_active", true)
-                                .putString("license_device_id", deviceId)
-                                .putString("license_expires_at", expiresAt)
+                                .putBoolean(
+                                    "license_active",
+                                    true
+                                )
+                                .putString(
+                                    "license_device_id",
+                                    deviceId
+                                )
+                                .putString(
+                                    "license_expires_at",
+                                    expiresAt
+                                )
                                 .putLong(
                                     "license_remaining_seconds",
                                     remaining
@@ -424,12 +492,15 @@ class MainActivity : Activity() {
                                 .apply()
 
                             status.text =
-                                "فعال‌سازی موفق شد.\nزمان باقی‌مانده: " +
+                                "فعال‌سازی موفق شد.\n" +
+                                "زمان باقی‌مانده: " +
                                 "${remaining / 86400} روز"
+
                             codeInput.text.clear()
                         } else {
                             status.text =
-                                "پاسخ سرور ناقص است؛ فعال‌سازی تأیید نشد."
+                                "پاسخ سرور ناقص است؛ " +
+                                "فعال‌سازی تأیید نشد."
                         }
                     } else {
                         status.text = "خطا: " +
@@ -444,7 +515,8 @@ class MainActivity : Activity() {
             } catch (e: Exception) {
                 runOnUiThread {
                     status.text =
-                        "اتصال ناموفق بود. اینترنت و تنظیمات سرور را بررسی کن."
+                        "اتصال ناموفق بود. اینترنت و سرور را بررسی کن."
+
                     codeInput.isEnabled = true
                 }
             } finally {
