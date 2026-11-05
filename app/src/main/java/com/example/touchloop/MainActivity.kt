@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
+import android.view.ViewGroup
 import android.widget.*
 import org.json.JSONObject
 import java.io.OutputStreamWriter
@@ -59,15 +60,32 @@ class MainActivity : Activity() {
                 this.text = text
                 textSize = size
                 gravity = Gravity.CENTER
-                setPadding(0, 14, 0, 10)
+                setPadding(0, 18, 0, 12)
             })
         }
 
         fun addButton(text: String, action: () -> Unit) {
             layout.addView(Button(this).apply {
                 this.text = text
+                isAllCaps = false
                 setOnClickListener { action() }
+            }, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = 8
             })
+        }
+
+        fun addField(field: EditText) {
+            layout.addView(field,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = 10
+                }
+            )
         }
 
         addTitle("Touch Loop", 26f)
@@ -80,6 +98,7 @@ class MainActivity : Activity() {
             } else {
                 "برای استفاده، کد فعال‌سازی لازم است."
             }
+            setPadding(0, 8, 0, 12)
         }
         layout.addView(status)
 
@@ -87,7 +106,7 @@ class MainActivity : Activity() {
             hint = "کد فعال‌سازی"
             setSingleLine(true)
         }
-        layout.addView(codeInput)
+        addField(codeInput)
 
         addButton("فعال‌سازی") {
             activateCode()
@@ -102,29 +121,32 @@ class MainActivity : Activity() {
         addButton("پاک‌کردن ماکروی ذخیره‌شده") {
             prefs.edit().remove("macro").apply()
             Toast.makeText(
-                this,
-                "ماکرو پاک شد",
-                Toast.LENGTH_SHORT
+                this, "ماکرو پاک شد", Toast.LENGTH_SHORT
             ).show()
         }
 
-        addTitle("پنل مدیریت کدها", 22f)
+        // پنل مدیریت
+        addTitle("پنل مدیریت کدها", 24f)
 
         emailInput = EditText(this).apply {
             hint = "ایمیل حساب مدیر Supabase"
+            contentDescription = "ایمیل حساب مدیر"
             setSingleLine(true)
+            textSize = 16f
             inputType = InputType.TYPE_CLASS_TEXT or
                 InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
         }
-        layout.addView(emailInput)
+        addField(emailInput)
 
         passwordInput = EditText(this).apply {
             hint = "رمز عبور حساب مدیر"
+            contentDescription = "رمز عبور حساب مدیر"
             setSingleLine(true)
+            textSize = 16f
             inputType = InputType.TYPE_CLASS_TEXT or
                 InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
-        layout.addView(passwordInput)
+        addField(passwordInput)
 
         addButton("ورود مدیر") {
             adminLogin()
@@ -135,7 +157,7 @@ class MainActivity : Activity() {
             setSingleLine(true)
             inputType = InputType.TYPE_CLASS_NUMBER
         }
-        layout.addView(daysInput)
+        addField(daysInput)
 
         addButton("ساخت کد فعال‌سازی") {
             createAdminCode()
@@ -144,7 +166,7 @@ class MainActivity : Activity() {
         adminStatus = TextView(this).apply {
             textSize = 15f
             gravity = Gravity.CENTER
-            text = "برای ساخت کد، ابتدا وارد حساب مدیر شو."
+            text = "ابتدا ایمیل و رمز مدیر را وارد کن."
             setPadding(0, 12, 0, 12)
         }
         layout.addView(adminStatus)
@@ -160,19 +182,20 @@ class MainActivity : Activity() {
                 ) as ClipboardManager
 
                 clipboard.setPrimaryClip(
-                    ClipData.newPlainText("Activation code", code)
+                    ClipData.newPlainText(
+                        "Activation code", code
+                    )
                 )
 
                 Toast.makeText(
-                    this,
-                    "کد کپی شد",
-                    Toast.LENGTH_SHORT
+                    this, "کد کپی شد", Toast.LENGTH_SHORT
                 ).show()
             }
         }
 
         setContentView(
             ScrollView(this).apply {
+                isFillViewport = true
                 addView(layout)
             }
         )
@@ -203,8 +226,7 @@ class MainActivity : Activity() {
                     doOutput = true
                     setRequestProperty("apikey", apiKey)
                     setRequestProperty(
-                        "Content-Type",
-                        "application/json"
+                        "Content-Type", "application/json"
                     )
                     setRequestProperty("Accept", "application/json")
                 }
@@ -228,11 +250,11 @@ class MainActivity : Activity() {
                     connection.errorStream
                 }
 
-                val text = stream?.bufferedReader()
+                val responseText = stream?.bufferedReader()
                     ?.use { it.readText() } ?: ""
 
                 val response = try {
-                    JSONObject(text)
+                    JSONObject(responseText)
                 } catch (_: Exception) {
                     JSONObject()
                 }
@@ -249,7 +271,6 @@ class MainActivity : Activity() {
                             "ورود موفق بود. مدت اعتبار را وارد کن."
                     } else {
                         adminToken = null
-
                         val message = response.optString(
                             "msg",
                             response.optString(
@@ -258,13 +279,13 @@ class MainActivity : Activity() {
                                     "error_description",
                                     response.optString(
                                         "error",
-                                        if (text.isNotBlank()) text
-                                        else "پاسخ سرور خالی است."
+                                        responseText.ifBlank {
+                                            "پاسخ سرور خالی است."
+                                        }
                                     )
                                 )
                             )
                         )
-
                         adminStatus.text =
                             "خطای ورود HTTP $responseCode:\n$message"
                     }
@@ -310,12 +331,10 @@ class MainActivity : Activity() {
                     doOutput = true
                     setRequestProperty("apikey", apiKey)
                     setRequestProperty(
-                        "Authorization",
-                        "Bearer $token"
+                        "Authorization", "Bearer $token"
                     )
                     setRequestProperty(
-                        "Content-Type",
-                        "application/json"
+                        "Content-Type", "application/json"
                     )
                     setRequestProperty("Accept", "application/json")
                 }
@@ -338,11 +357,11 @@ class MainActivity : Activity() {
                     connection.errorStream
                 }
 
-                val text = stream?.bufferedReader()
+                val responseText = stream?.bufferedReader()
                     ?.use { it.readText() } ?: ""
 
                 val response = try {
-                    JSONObject(text)
+                    JSONObject(responseText)
                 } catch (_: Exception) {
                     JSONObject()
                 }
@@ -362,8 +381,9 @@ class MainActivity : Activity() {
                     } else {
                         val message = response.optString(
                             "message",
-                            if (text.isNotBlank()) text
-                            else "پاسخ سرور خالی است."
+                            responseText.ifBlank {
+                                "پاسخ سرور خالی است."
+                            }
                         )
                         adminStatus.text =
                             "خطای ساخت کد HTTP $responseCode:\n$message"
@@ -414,8 +434,7 @@ class MainActivity : Activity() {
                     doOutput = true
                     setRequestProperty("apikey", apiKey)
                     setRequestProperty(
-                        "Content-Type",
-                        "application/json"
+                        "Content-Type", "application/json"
                     )
                     setRequestProperty("Accept", "application/json")
                 }
@@ -439,11 +458,11 @@ class MainActivity : Activity() {
                     connection.errorStream
                 }
 
-                val text = stream?.bufferedReader()
+                val responseText = stream?.bufferedReader()
                     ?.use { it.readText() } ?: ""
 
                 val response = try {
-                    JSONObject(text)
+                    JSONObject(responseText)
                 } catch (_: Exception) {
                     JSONObject()
                 }
@@ -479,8 +498,9 @@ class MainActivity : Activity() {
                     } else {
                         val message = response.optString(
                             "message",
-                            if (text.isNotBlank()) text
-                            else "کد تأیید نشد."
+                            responseText.ifBlank {
+                                "کد تأیید نشد."
+                            }
                         )
                         status.text =
                             "خطای فعال‌سازی HTTP $responseCode:\n$message"
