@@ -1,4 +1,4 @@
-
+8
 package com.example.touchloop
 
 import android.app.Activity
@@ -29,7 +29,7 @@ class MainActivity : Activity() {
     // اطلاعات ثابت حساب مدیر
     // این مقادیر باید با حساب واقعی Supabase Auth مطابقت داشته باشند.
     private val ADMIN_EMAIL = "fst221381@gmail.com"
-    private val ADMIN_PASSWORD = "mosavifa"
+    private val ADMIN_PASSWORD = "fm1381"
 
     private lateinit var status: TextView
     private lateinit var codeInput: EditText
