@@ -1,3 +1,4 @@
+
 package com.example.touchloop
 
 import android.app.Activity
@@ -6,42 +7,101 @@ import android.os.Bundle
 import android.provider.Settings
 import android.view.Gravity
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 
 class MainActivity : Activity() {
+
+    private lateinit var status: TextView
+    private lateinit var codeInput: EditText
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
+
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding(28, 36, 28, 36)
         }
+
         val title = TextView(this).apply {
-            text = "Touch Loop — ماکرو اندروید"
-            textSize = 22f
+            text = "Touch Loop"
+            textSize = 25f
             gravity = Gravity.CENTER
         }
-        val info = TextView(this).apply {
-            text = "\nاین نسخه آزمایشی کلیک‌های قابل‌دسترسی و رویدادهای اسکرول را ثبت می‌کند.\n\n۱) سرویس دسترس‌پذیری را فعال کن.\n۲) به برنامه موردنظر برو.\n۳) از پنل شناور Record را بزن، عملیات را انجام بده و Stop را بزن.\n۴) Play را بزن تا ماکرو تا زمان Stop تکرار شود.\n\nورود متن، کشیدن دقیق انگشت و صفحات امن در این نسخه تضمین نشده‌اند."
-            textSize = 16f
+
+        codeInput = EditText(this).apply {
+            hint = "کد فعال‌سازی را وارد کن"
+            singleLine = true
         }
-        val settings = Button(this).apply {
-            text = "فعال‌سازی Accessibility"
-            setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+
+        status = TextView(this).apply {
+            textSize = 15f
+            gravity = Gravity.CENTER
+            text = if (prefs.getBoolean("license_active", false)) {
+                "وضعیت ذخیره‌شده: فعال‌سازی قبلی"
+            } else {
+                "برای استفاده، کد فعال‌سازی لازم است."
+            }
         }
+
+        val activate = Button(this).apply {
+            text = "فعال‌سازی"
+            setOnClickListener {
+                val code = codeInput.text.toString().trim()
+
+                if (code.isEmpty()) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "کد فعال‌سازی را وارد کن",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    return@setOnClickListener
+                }
+
+                status.text =
+                    "اتصال به سرور هنوز پیاده‌سازی نشده است. کد فعال نشده."
+
+                Toast.makeText(
+                    this@MainActivity,
+                    "فعال‌سازی آنلاین در مرحله بعد متصل می‌شود.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+
+        val accessibility = Button(this).apply {
+            text = "تنظیمات Accessibility"
+            setOnClickListener {
+                startActivity(
+                    Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                )
+            }
+        }
+
         val clear = Button(this).apply {
             text = "پاک‌کردن ماکروی ذخیره‌شده"
             setOnClickListener {
-                getSharedPreferences("touch_loop", MODE_PRIVATE).edit().remove("macro").apply()
-                Toast.makeText(this@MainActivity, "ماکرو پاک شد", Toast.LENGTH_SHORT).show()
+                prefs.edit().remove("macro").apply()
+                Toast.makeText(
+                    this@MainActivity,
+                    "ماکرو پاک شد",
+                    Toast.LENGTH_SHORT
+                ).show()
             }
         }
+
         layout.addView(title)
-        layout.addView(info)
-        layout.addView(settings)
+        layout.addView(status)
+        layout.addView(codeInput)
+        layout.addView(activate)
+        layout.addView(accessibility)
         layout.addView(clear)
+
         setContentView(layout)
     }
 }
