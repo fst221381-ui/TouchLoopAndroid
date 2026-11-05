@@ -21,7 +21,6 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Calendar
-import java.util.TimeZone
 
 class MainActivity : Activity() {
 
@@ -120,7 +119,6 @@ class MainActivity : Activity() {
     }
 
     private fun addHeader() {
-        // ✅ نمایش لوگو
         val logo = ImageView(this).apply {
             setImageResource(R.drawable.ic_touch_loop_logo)
             layoutParams = LinearLayout.LayoutParams(dp(80), dp(80)).apply { gravity = Gravity.CENTER }
@@ -133,7 +131,6 @@ class MainActivity : Activity() {
         addSpace(16)
     }
 
-    // ✅ تبدیل تاریخ میلادی به شمسی
     private fun gregorianToJalali(gy: Int, gm: Int, gd: Int): Triple<Int, Int, Int> {
         val gDaysInMonth = intArrayOf(0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334)
         val gy2 = if (gm > 2) gy + 1 else gy
@@ -146,31 +143,10 @@ class MainActivity : Activity() {
             jy += (days - 1) / 365
             days = (days - 1) % 365
         }
-        val jm: Int
-        val jd: Int
-        if (days < 186) {
-            jm = 1 + (days / 31)
-            jd = 1 + (days % 31)
-        } else {
-            jm = 7 + ((days - 186) / 30)
-            jd = 1 + ((days - 186) % 30)
-        }
+        val jm: Int; val jd: Int
+        if (days < 186) { jm = 1 + (days / 31); jd = 1 + (days % 31) } 
+        else { jm = 7 + ((days - 186) / 30); jd = 1 + ((days - 186) % 30) }
         return Triple(jy, jm, jd)
-    }
-
-    private fun formatPersianDate(isoDate: String): String {
-        if (isoDate.isBlank() || isoDate == "—") return "—"
-        return try {
-            val parts = isoDate.take(10).split("-")
-            if (parts.size != 3) return isoDate
-            val gy = parts[0].toInt()
-            val gm = parts[1].toInt()
-            val gd = parts[2].toInt()
-            val (jy, jm, jd) = gregorianToJalali(gy, gm, gd)
-            String.format("%04d/%02d/%02d", jy, jm, jd)
-        } catch (_: Exception) {
-            isoDate
-        }
     }
 
     private fun formatPersianDateTime(isoDate: String): String {
@@ -178,11 +154,12 @@ class MainActivity : Activity() {
         return try {
             val datePart = isoDate.take(10)
             val timePart = if (isoDate.length >= 16) isoDate.substring(11, 16) else ""
-            val persianDate = formatPersianDate(datePart)
+            val parts = datePart.split("-")
+            if (parts.size != 3) return isoDate
+            val (jy, jm, jd) = gregorianToJalali(parts[0].toInt(), parts[1].toInt(), parts[2].toInt())
+            val persianDate = String.format("%04d/%02d/%02d", jy, jm, jd)
             if (timePart.isNotBlank()) "$persianDate $timePart" else persianDate
-        } catch (_: Exception) {
-            isoDate
-        }
+        } catch (_: Exception) { isoDate }
     }
 
     private fun showHome() {
@@ -206,8 +183,7 @@ class MainActivity : Activity() {
         addText("ورود کاربر", 23f, white, true, true)
         addSpace(10)
         val status = addText(
-            if (prefs.getBoolean("license_active", false)) "قبلاً روی این گوشی فعال‌سازی انجام شده است."
-            else "کد فعال‌سازی را وارد کن.",
+            if (prefs.getBoolean("license_active", false)) "قبلاً روی این گوشی فعال‌سازی انجام شده است." else "کد فعال‌سازی را وارد کن.",
             14f, muted, false, true
         )
         val codeInput = addField("کد فعال‌سازی").apply { contentDescription = "کد فعال‌سازی" }
@@ -265,9 +241,7 @@ class MainActivity : Activity() {
             if (days == null || days !in 1..3650) { daysInput.error = "عددی بین 1 تا 3650 وارد کن."; return@addButton }
             createStatus.text = "در حال ساخت کد..."
             runBackground(onError = { error -> createStatus.text = "خطای ساخت کد: $error" }) {
-                val response = postJson(adminEndpoint, JSONObject().apply {
-                    put("action", "create"); put("duration_days", days)
-                }, token)
+                val response = postJson(adminEndpoint, JSONObject().apply { put("action", "create"); put("duration_days", days) }, token)
                 val body = response.second
                 val code = body.optString("code", "")
                 val success = body.optBoolean("success", false)
@@ -282,19 +256,15 @@ class MainActivity : Activity() {
                 }
             }
         }
-
-        // ✅ دکمه کپی کد ساخته‌شده
         addButton("کپی آخرین کد ساخته‌شده") {
             val code = generatedCode
-            if (code.isNullOrBlank()) {
-                Toast.makeText(this, "هنوز کدی ساخته نشده است.", Toast.LENGTH_SHORT).show()
-            } else {
+            if (code.isNullOrBlank()) { Toast.makeText(this, "هنوز کدی ساخته نشده است.", Toast.LENGTH_SHORT).show() } 
+            else {
                 val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 clipboard.setPrimaryClip(ClipData.newPlainText("Activation code", code))
                 Toast.makeText(this, "کد کپی شد: $code", Toast.LENGTH_LONG).show()
             }
         }
-
         addSpace(8)
         addText("فهرست کدها", 20f, white, true, true)
         addSpace(6)
@@ -329,10 +299,7 @@ class MainActivity : Activity() {
                 }
                 status.text = "تعداد: ${codes.length()} | فعال: $active | استفاده‌نشده: $unused | منقضی: $expired | مسدود: $blocked"
                 if (codes.length() == 0) {
-                    val empty = TextView(this).apply {
-                        text = "هنوز کدی در فهرست وجود ندارد."
-                        setTextColor(muted); textSize = 14f; gravity = Gravity.CENTER; setPadding(0, dp(18), 0, dp(18))
-                    }
+                    val empty = TextView(this).apply { text = "هنوز کدی در فهرست وجود ندارد."; setTextColor(muted); textSize = 14f; gravity = Gravity.CENTER; setPadding(0, dp(18), 0, dp(18)) }
                     container.addView(empty); return@runOnUiThread
                 }
                 for (i in 0 until codes.length()) {
@@ -352,7 +319,7 @@ class MainActivity : Activity() {
         val expires = item.optString("expires_at", "—")
         val device = item.optString("device_id", "")
         val remaining = item.optLong("remaining_seconds", 0L)
-        val codeValue = item.optString("code", "") // ✅ کد خود کد
+        val codeValue = item.optString("code", "") // دریافت خود کد از سرور
 
         val statusLabel = when (statusValue) {
             "active" -> "فعال"; "unused" -> "استفاده‌نشده"
@@ -373,13 +340,9 @@ class MainActivity : Activity() {
             })
         }
 
-        line("وضعیت: $statusLabel", when (statusValue) {
-            "active" -> green; "blocked", "expired" -> red; else -> cyan
-        })
+        line("وضعیت: $statusLabel", when (statusValue) { "active" -> green; "blocked", "expired" -> red; else -> cyan })
         line("شناسه: ${id.ifBlank { "—" }}", muted)
         line("مدت اعتبار: $days روز")
-
-        // ✅ تاریخ‌ها به شمسی
         line("تاریخ ساخت: ${formatPersianDateTime(created)}", muted)
         line("تاریخ فعال‌سازی: ${formatPersianDateTime(activated)}", muted)
         line("تاریخ انقضا: ${formatPersianDateTime(expires)}", if (statusValue == "active") green else muted)
@@ -391,28 +354,19 @@ class MainActivity : Activity() {
             line("شناسه دستگاه: $device", muted)
         }
 
-        // ✅ نمایش و کپی کد خود کد
+        // ✅ نمایش واضح کد و دکمه کپی
         if (codeValue.isNotBlank() && codeValue != "null") {
             val codeRow = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, dp(6), 0, dp(6))
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(8), 0, dp(8))
             }
             val codeText = TextView(this).apply {
-                text = "کد: $codeValue"
-                textSize = 14f
-                setTextColor(cyan)
-                setTypeface(null, Typeface.BOLD)
+                text = "کد: $codeValue"; textSize = 15f; setTextColor(cyan); setTypeface(null, Typeface.BOLD)
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }
             codeRow.addView(codeText)
-
             val copyBtn = Button(this).apply {
-                text = "کپی"
-                textSize = 12f
-                setPadding(dp(10), dp(4), dp(10), dp(4))
-                setTextColor(white)
-                background = rounded(cyan, 8)
+                text = "کپی"; textSize = 12f; setPadding(dp(12), dp(6), dp(12), dp(6))
+                setTextColor(white); background = rounded(cyan, 8)
                 setOnClickListener {
                     val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     clipboard.setPrimaryClip(ClipData.newPlainText("Activation code", codeValue))
@@ -422,18 +376,64 @@ class MainActivity : Activity() {
             codeRow.addView(copyBtn)
             card.addView(codeRow)
         } else {
-            line("متن کد از پایگاه داده قابل بازیابی نیست.", muted)
+            line("کد در پاسخ سرور موجود نبود.", muted)
         }
 
-        if (id.isNotBlank() && (statusValue == "blocked" || statusValue == "active" || statusValue == "unused")) {
+        // ✅ دکمه حذف برای کدهای منقضی یا مسدود شده
+        if (statusValue == "blocked" || statusValue == "expired") {
+            val deleteBtn = Button(this).apply {
+                text = "🗑️ حذف از لیست"
+                textSize = 13f
+                isAllCaps = false
+                setTextColor(white)
+                background = rounded(red, 10)
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                setOnClickListener { deleteCode(id, this) }
+            }
+            card.addView(deleteBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
+        } 
+        // دکمه مسدود/رفع مسدودی برای کدهای فعال یا استفاده‌نشده
+        else if (id.isNotBlank() && (statusValue == "active" || statusValue == "unused")) {
             val actionText = if (statusValue == "blocked") "رفع مسدودی" else "مسدود کردن"
             val actionColor = if (statusValue == "blocked") green else red
             val actionButton = Button(this).apply {
-                text = actionText; isAllCaps = false; setTextColor(white)
-                background = rounded(actionColor, 10)
+                text = actionText; isAllCaps = false; setTextColor(white); background = rounded(actionColor, 10)
                 setOnClickListener { setCodeBlocked(id, statusValue != "blocked", this) }
             }
-            card.addView(actionButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
+            card.addView(actionButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
+        }
+    }
+
+    // ✅ تابع جدید برای حذف کد
+    private fun deleteCode(id: String, button: Button) {
+        val token = adminToken
+        if (token.isNullOrBlank()) { Toast.makeText(this, "ابتدا دوباره وارد پنل مدیر شو.", Toast.LENGTH_SHORT).show(); return }
+        
+        button.isEnabled = false
+        button.text = "در حال حذف..."
+        
+        runBackground(onError = { error ->
+            button.isEnabled = true
+            button.text = "🗑️ حذف از لیست"
+            Toast.makeText(this, "خطا در حذف: $error", Toast.LENGTH_LONG).show()
+        }) {
+            val response = postJson(adminEndpoint, JSONObject().apply {
+                put("action", "delete")
+                put("id", id)
+            }, token)
+            
+            if (response.first !in 200..299 || !response.second.optBoolean("success", false)) {
+                throw Exception(response.second.optString("message", response.second.optString("error", "سرور عملیات حذف را تأیید نکرد.")))
+            }
+            
+            runOnUiThread {
+                Toast.makeText(this, "کد با موفقیت حذف شد.", Toast.LENGTH_SHORT).show()
+                // بارگذاری مجدد لیست برای به‌روزرسانی
+                val listContainer = root.getChildAt(root.childCount - 2) as LinearLayout // پیدا کردن کانتینر لیست
+                val listStatus = root.getChildAt(root.childCount - 3) as TextView // پیدا کردن متن وضعیت
+                // راه ساده‌تر: فراخوانی مستقیم showAdminDashboard برای رفرش کامل
+                showAdminDashboard()
+            }
         }
     }
 
@@ -453,7 +453,6 @@ class MainActivity : Activity() {
             }
             runOnUiThread {
                 Toast.makeText(this, if (block) "کد مسدود شد." else "مسدودی کد برداشته شد.", Toast.LENGTH_SHORT).show()
-                // بازسازی پنل با تاریخ‌های جدید
                 showAdminDashboard()
             }
         }
@@ -466,9 +465,7 @@ class MainActivity : Activity() {
         if (deviceId.length < 8) { status.text = "شناسه گوشی قابل دریافت نیست."; return }
         status.text = "در حال بررسی کد با سرور..."
         runBackground(onError = { error -> status.text = "خطای اتصال: $error" }) {
-            val response = postJson(activateEndpoint, JSONObject().apply {
-                put("code", code); put("device_id", deviceId)
-            }, useAuthToken = false)
+            val response = postJson(activateEndpoint, JSONObject().apply { put("code", code); put("device_id", deviceId) }, useAuthToken = false)
             val body = response.second
             if (response.first !in 200..299 || !body.optBoolean("success", false)) {
                 throw Exception(body.optString("message", body.optString("error", "کد تأیید نشد.")))
