@@ -218,6 +218,7 @@ class MainActivity : Activity() {
 
                 
                 val response = JSONObject(text)
+              adminStatus.text = "HTTP $responseCode: $text"
                 val token = response.optString("access_token", "")
 
                 runOnUiThread {
