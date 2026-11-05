@@ -18,6 +18,5 @@
         android:fillColor="#00000000"
         android:strokeColor="#3FBED2"
         android:strokeWidth="4"
-        android:strokeDashArray="4 4"
         android:pathData="M93,70 L93,45 L75,45"/>
 </vector>
