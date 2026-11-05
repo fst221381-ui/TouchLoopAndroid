@@ -224,8 +224,8 @@ class MainActivity : Activity() {
         adminToken = token
         passwordInput.text.clear()
         adminStatus.text =
-            "ورود موفق بود. حالا مدت اعتبار را وارد کن."
-    } else {
+            "ورود موفق بود. حالا مدت اعتبار را وارد کن."} 
+                    else {
         adminToken = null
         val message = response.optString(
             "msg",
