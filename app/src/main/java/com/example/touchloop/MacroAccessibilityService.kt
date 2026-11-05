@@ -9,6 +9,7 @@ import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -65,34 +66,70 @@ class MacroAccessibilityService : AccessibilityService() {
     private var ignoreEventsUntil = 0L
 
     private lateinit var wm: WindowManager
-
     private var pendingScroll: Step? = null
 
     private val flushScrollRunnable = Runnable {
         flushPendingScroll()
     }
 
+    private fun hasValidLicense(): Boolean {
+        val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
+
+        if (!prefs.getBoolean("license_active", false)) return false
+
+        val currentDevice = Settings.Secure.getString(
+            contentResolver,
+            Settings.Secure.ANDROID_ID
+        ) ?: return false
+
+        if (prefs.getString("license_device_id", "") != currentDevice) {
+            return false
+        }
+
+        val expiryText = prefs.getString("license_expires_at", null)
+            ?: return false
+
+        return try {
+            val formatter = java.text.SimpleDateFormat(
+                "yyyy-MM-dd'T'HH:mm:ss",
+                java.util.Locale.US
+            ).apply {
+                timeZone = java.util.TimeZone.getTimeZone("UTC")
+            }
+
+            val expiry = formatter.parse(expiryText.take(19))
+                ?: return false
+
+            System.currentTimeMillis() < expiry.time
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
 
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
+
+        if (!hasValidLicense()) {
+            stopAll()
+            return
+        }
+
         loadMacro()
 
         val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
 
         playbackSpeed = prefs.getFloat(
-            "playback_speed",
-            1.0f
+            "playback_speed", 1.0f
         ).coerceIn(0.25f, 8.0f)
 
         panelWidthDp = prefs.getInt(
-            "panel_width_dp",
-            220
+            "panel_width_dp", 220
         ).coerceIn(180, 360)
 
         panelHeightDp = prefs.getInt(
-            "panel_height_dp",
-            0
+            "panel_height_dp", 0
         ).coerceIn(0, 700)
 
         showPanel()
@@ -100,6 +137,12 @@ class MacroAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (!hasValidLicense()) {
+            recording = false
+            stopPlayback()
+            return
+        }
+
         if (event == null || !recording || playing) return
         if (System.currentTimeMillis() < ignoreEventsUntil) return
         if (event.packageName?.toString() == packageName) return
@@ -121,7 +164,6 @@ class MacroAccessibilityService : AccessibilityService() {
         if (bounds.width() <= 0 || bounds.height() <= 0) return
 
         val now = System.currentTimeMillis()
-
         val delay = if (lastEventAt == 0L) {
             350L
         } else {
@@ -216,12 +258,14 @@ class MacroAccessibilityService : AccessibilityService() {
         val scroll = pendingScroll ?: return
         pendingScroll = null
 
-        if (recording && !playing) {
+        if (recording && !playing && hasValidLicense()) {
             addRecordedStep(scroll)
         }
     }
 
     private fun addRecordedStep(step: Step) {
+        if (!hasValidLicense()) return
+
         steps.add(step)
         lastEventAt = System.currentTimeMillis()
 
@@ -240,7 +284,7 @@ class MacroAccessibilityService : AccessibilityService() {
         (value * resources.displayMetrics.density).toInt()
 
     private fun showPanel() {
-        if (panel != null) return
+        if (!hasValidLicense() || panel != null) return
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -275,13 +319,26 @@ class MacroAccessibilityService : AccessibilityService() {
                 minHeight = dp(36)
                 setPadding(dp(4), dp(2), dp(4), dp(2))
                 isAllCaps = false
-                setOnClickListener { action() }
+                setOnClickListener {
+                    if (!hasValidLicense()) {
+                        recording = false
+                        stopPlayback()
+                        status?.text = "مجوز فعال نیست یا منقضی شده است"
+                        removePanel()
+                    } else {
+                        action()
+                    }
+                }
             }
 
-        // جابه‌جایی پنل بدون نیاز به شناسه در فایل منابع
         var panelDragData: FloatArray? = null
 
         header.setOnTouchListener { _, event ->
+            if (!hasValidLicense()) {
+                removePanel()
+                return@setOnTouchListener true
+            }
+
             val params = panelParams
                 ?: return@setOnTouchListener false
 
@@ -303,10 +360,8 @@ class MacroAccessibilityService : AccessibilityService() {
                     val dx = (event.rawX - data[0]).toInt()
                     val dy = (event.rawY - data[1]).toInt()
 
-                    val screenWidth =
-                        resources.displayMetrics.widthPixels
-                    val screenHeight =
-                        resources.displayMetrics.heightPixels
+                    val screenWidth = resources.displayMetrics.widthPixels
+                    val screenHeight = resources.displayMetrics.heightPixels
 
                     params.x = (data[2].toInt() + dx).coerceIn(
                         0,
@@ -322,7 +377,6 @@ class MacroAccessibilityService : AccessibilityService() {
                         wm.updateViewLayout(root, params)
                     } catch (_: Exception) {
                     }
-
                     true
                 }
 
@@ -341,14 +395,11 @@ class MacroAccessibilityService : AccessibilityService() {
 
         root.addView(button("●  ضبط ماکرو") {
             stopPlayback()
-
             handler.removeCallbacks(flushScrollRunnable)
             pendingScroll = null
-
             steps.clear()
             recording = true
             lastEventAt = 0L
-
             status?.text = "در حال ضبط…"
         })
 
@@ -364,7 +415,6 @@ class MacroAccessibilityService : AccessibilityService() {
             if (recording && !playing) {
                 handler.removeCallbacks(flushScrollRunnable)
                 flushPendingScroll()
-
                 addRecordedStep(Step(kind = "BACK"))
                 performGlobalAction(GLOBAL_ACTION_BACK)
             } else if (playing) {
@@ -379,11 +429,9 @@ class MacroAccessibilityService : AccessibilityService() {
                 handler.removeCallbacks(flushScrollRunnable)
                 flushPendingScroll()
             }
-
             recording = false
             stopPlayback()
             saveMacro()
-
             status?.text = "ذخیره شد • ${steps.size} مرحله"
         })
 
@@ -392,7 +440,6 @@ class MacroAccessibilityService : AccessibilityService() {
                 handler.removeCallbacks(flushScrollRunnable)
                 flushPendingScroll()
             }
-
             recording = false
             stopPlayback()
             saveMacro()
@@ -427,18 +474,14 @@ class MacroAccessibilityService : AccessibilityService() {
                 updateSpeedLabel()
             },
             LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                1f
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
             )
         )
 
         speedRow.addView(
             speedLabel,
             LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                1.5f
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.5f
             )
         )
 
@@ -449,9 +492,7 @@ class MacroAccessibilityService : AccessibilityService() {
                 updateSpeedLabel()
             },
             LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                1f
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
             )
         )
 
@@ -468,9 +509,7 @@ class MacroAccessibilityService : AccessibilityService() {
                 updatePanelSize()
             },
             LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                1f
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
             )
         )
 
@@ -480,9 +519,7 @@ class MacroAccessibilityService : AccessibilityService() {
                 updatePanelSize()
             },
             LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                1f
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
             )
         )
 
@@ -499,9 +536,7 @@ class MacroAccessibilityService : AccessibilityService() {
                 updatePanelSize()
             },
             LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                1f
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
             )
         )
 
@@ -511,9 +546,7 @@ class MacroAccessibilityService : AccessibilityService() {
                 updatePanelSize()
             },
             LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                1f
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
             )
         )
 
@@ -560,8 +593,12 @@ class MacroAccessibilityService : AccessibilityService() {
     }
 
     private fun updatePanelSize() {
-        val params = panelParams ?: return
+        if (!hasValidLicense()) {
+            removePanel()
+            return
+        }
 
+        val params = panelParams ?: return
         params.width = dp(panelWidthDp)
         params.height = if (panelHeightDp == 0) {
             WindowManager.LayoutParams.WRAP_CONTENT
@@ -582,7 +619,7 @@ class MacroAccessibilityService : AccessibilityService() {
     }
 
     private fun showPointPicker() {
-        if (pointPicker != null) return
+        if (!hasValidLicense() || pointPicker != null) return
 
         val root = FrameLayout(this).apply {
             setBackgroundColor(0x22000000)
@@ -623,30 +660,28 @@ class MacroAccessibilityService : AccessibilityService() {
         )
 
         root.setOnTouchListener { _, event ->
-            if (
-                event.action == MotionEvent.ACTION_UP &&
-                pointPicker === root
-            ) {
+            if (!hasValidLicense()) {
+                removePointPicker()
+                return@setOnTouchListener true
+            }
+
+            if (event.action == MotionEvent.ACTION_UP && pointPicker === root) {
                 val x = event.rawX
                 val y = event.rawY
 
                 removePointPicker()
 
                 addRecordedStep(
-                    Step(
-                        kind = "TAP",
-                        x = x,
-                        y = y,
-                        delay = 350L
-                    )
+                    Step(kind = "TAP", x = x, y = y, delay = 350L)
                 )
 
-                ignoreEventsUntil =
-                    System.currentTimeMillis() + 800L
+                ignoreEventsUntil = System.currentTimeMillis() + 800L
 
                 handler.postDelayed({
-                    dispatchTap(x, y) {
-                        status?.text = "کلیک ثبت شد"
+                    if (hasValidLicense()) {
+                        dispatchTap(x, y) {
+                            status?.text = "کلیک ثبت شد"
+                        }
                     }
                 }, 100L)
 
@@ -685,51 +720,49 @@ class MacroAccessibilityService : AccessibilityService() {
             } catch (_: Exception) {
             }
         }
-
         pointPicker = null
     }
 
     private fun runNext(session: Int = playbackToken) {
+        if (!hasValidLicense()) {
+            stopPlayback()
+            status?.text = "مجوز فعال نیست یا منقضی شده است"
+            return
+        }
+
         if (!playing || session != playbackToken || steps.isEmpty()) return
 
         if (playIndex >= steps.size) {
             playIndex = 0
-
-            val gap = (100L / playbackSpeed)
-                .toLong()
-                .coerceIn(20L, 100L)
+            val gap = (100L / playbackSpeed).toLong().coerceIn(20L, 100L)
 
             handler.postDelayed({
-                if (playing && session == playbackToken) {
+                if (hasValidLicense() && playing && session == playbackToken) {
                     runNext(session)
                 }
             }, gap)
-
             return
         }
 
         val step = steps[playIndex++]
-
         val delay = (step.delay / playbackSpeed)
             .toLong()
             .coerceIn(15L, 20000L)
 
         handler.postDelayed({
-            if (!playing || session != playbackToken) {
+            if (!hasValidLicense()) {
+                stopPlayback()
                 return@postDelayed
             }
+            if (!playing || session != playbackToken) return@postDelayed
 
             when (step.kind) {
                 "BACK" -> {
                     performGlobalAction(GLOBAL_ACTION_BACK)
-
                     handler.postDelayed({
                         runNext(session)
-                    }, (650L / playbackSpeed)
-                        .toLong()
-                        .coerceIn(60L, 650L))
+                    }, (650L / playbackSpeed).toLong().coerceIn(60L, 650L))
                 }
-
                 "SCROLL" -> performSwipe(step, session)
                 "TAP" -> performTap(step, session)
                 else -> runNext(session)
@@ -742,29 +775,21 @@ class MacroAccessibilityService : AccessibilityService() {
         y: Float,
         onDone: (() -> Unit)? = null
     ) {
-        if (Build.VERSION.SDK_INT >= 24) {
-            val path = Path().apply {
-                moveTo(x, y)
-            }
+        if (!hasValidLicense()) return
 
+        if (Build.VERSION.SDK_INT >= 24) {
+            val path = Path().apply { moveTo(x, y) }
             val gesture = GestureDescription.Builder()
-                .addStroke(
-                    GestureDescription.StrokeDescription(path, 0, 70L)
-                )
+                .addStroke(GestureDescription.StrokeDescription(path, 0, 70L))
                 .build()
 
             dispatchGesture(
                 gesture,
                 object : GestureResultCallback() {
-                    override fun onCompleted(
-                        gestureDescription: GestureDescription?
-                    ) {
+                    override fun onCompleted(gestureDescription: GestureDescription?) {
                         onDone?.invoke()
                     }
-
-                    override fun onCancelled(
-                        gestureDescription: GestureDescription?
-                    ) {
+                    override fun onCancelled(gestureDescription: GestureDescription?) {
                         onDone?.invoke()
                     }
                 },
@@ -772,51 +797,39 @@ class MacroAccessibilityService : AccessibilityService() {
             )
         } else {
             val root = rootInActiveWindow
-
             try {
                 if (!clickNodeAt(root, x.toInt(), y.toInt())) {
-                    status?.text =
-                        "این کلیک در اندروید ۶ قابل اجرا نیست"
+                    status?.text = "این کلیک در اندروید ۶ قابل اجرا نیست"
                 }
             } finally {
                 root?.recycle()
             }
-
             onDone?.invoke()
         }
     }
 
     private fun performTap(step: Step, session: Int) {
+        if (!hasValidLicense()) {
+            stopPlayback()
+            return
+        }
         if (!playing || session != playbackToken) return
 
         if (Build.VERSION.SDK_INT >= 24) {
-            val path = Path().apply {
-                moveTo(step.x, step.y)
-            }
-
+            val path = Path().apply { moveTo(step.x, step.y) }
             val gesture = GestureDescription.Builder()
-                .addStroke(
-                    GestureDescription.StrokeDescription(path, 0, 70L)
-                )
+                .addStroke(GestureDescription.StrokeDescription(path, 0, 70L))
                 .build()
 
             dispatchGesture(
                 gesture,
                 object : GestureResultCallback() {
-                    override fun onCompleted(
-                        gestureDescription: GestureDescription?
-                    ) {
+                    override fun onCompleted(gestureDescription: GestureDescription?) {
                         runNext(session)
                     }
-
-                    override fun onCancelled(
-                        gestureDescription: GestureDescription?
-                    ) {
+                    override fun onCancelled(gestureDescription: GestureDescription?) {
                         if (playing && session == playbackToken) {
-                            handler.postDelayed(
-                                { runNext(session) },
-                                100L
-                            )
+                            handler.postDelayed({ runNext(session) }, 100L)
                         }
                     }
                 },
@@ -824,7 +837,6 @@ class MacroAccessibilityService : AccessibilityService() {
             )
         } else {
             val root = rootInActiveWindow
-
             try {
                 if (!clickNodeAt(root, step.x.toInt(), step.y.toInt())) {
                     status?.text = "کلیک در اندروید ۶ قابل اجرا نیست"
@@ -832,11 +844,7 @@ class MacroAccessibilityService : AccessibilityService() {
             } finally {
                 root?.recycle()
             }
-
-            handler.postDelayed(
-                { runNext(session) },
-                150L
-            )
+            handler.postDelayed({ runNext(session) }, 150L)
         }
     }
 
@@ -845,34 +853,33 @@ class MacroAccessibilityService : AccessibilityService() {
         x: Int,
         y: Int
     ): Boolean {
-        if (node == null) return false
+        if (!hasValidLicense() || node == null) return false
 
         val bounds = Rect()
         node.getBoundsInScreen(bounds)
-
         if (!bounds.contains(x, y)) return false
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-
             val clicked = try {
                 clickNodeAt(child, x, y)
             } finally {
                 child.recycle()
             }
-
             if (clicked) return true
         }
 
-        var current: AccessibilityNodeInfo? =
-            AccessibilityNodeInfo.obtain(node)
+        var current: AccessibilityNodeInfo? = AccessibilityNodeInfo.obtain(node)
 
         while (current != null) {
+            if (!hasValidLicense()) {
+                current.recycle()
+                return false
+            }
+
             if (
                 current.isClickable &&
-                current.performAction(
-                    AccessibilityNodeInfo.ACTION_CLICK
-                )
+                current.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             ) {
                 current.recycle()
                 return true
@@ -887,6 +894,10 @@ class MacroAccessibilityService : AccessibilityService() {
     }
 
     private fun performSwipe(step: Step, session: Int) {
+        if (!hasValidLicense()) {
+            stopPlayback()
+            return
+        }
         if (!playing || session != playbackToken) return
 
         if (Build.VERSION.SDK_INT < 24) {
@@ -894,27 +905,18 @@ class MacroAccessibilityService : AccessibilityService() {
             val forward = step.scrollDeltaY >= 0
 
             val scrolled = try {
-                performScrollAtPoint(
-                    root,
-                    step.x.toInt(),
-                    step.y.toInt(),
-                    forward
-                ) || performScrollOnNode(root, forward)
+                performScrollAtPoint(root, step.x.toInt(), step.y.toInt(), forward) ||
+                    performScrollOnNode(root, forward)
             } finally {
                 root?.recycle()
             }
 
-            if (!scrolled) {
-                status?.text = "این صفحه اسکرول قابل‌دسترسی ندارد"
-            }
+            if (!scrolled) status?.text = "این صفحه اسکرول قابل‌دسترسی ندارد"
 
             handler.postDelayed(
                 { runNext(session) },
-                (step.delay * 0.65f)
-                    .toLong()
-                    .coerceIn(180L, 650L)
+                (step.delay * 0.65f).toLong().coerceIn(180L, 650L)
             )
-
             return
         }
 
@@ -934,15 +936,8 @@ class MacroAccessibilityService : AccessibilityService() {
         val minY = top + 2f
         val maxY = bottom - 2f
         val height = (bottom - top).toFloat().coerceAtLeast(4f)
-        val x = step.x.coerceIn(
-            left.toFloat() + 2f,
-            right.toFloat() - 2f
-        )
+        val x = step.x.coerceIn(left.toFloat() + 2f, right.toFloat() - 2f)
 
-        /*
-         * Playback speed affects the delay between steps,
-         * not the duration of the swipe itself.
-         */
         val estimated = if (step.scrollDeltaY != 0) {
             abs(step.scrollDeltaY.toFloat())
         } else {
@@ -957,19 +952,11 @@ class MacroAccessibilityService : AccessibilityService() {
         val centerY = step.y.coerceIn(minY, maxY)
         val direction = if (step.scrollDeltaY < 0) 1f else -1f
 
-        var startY = centerY - direction * distance / 2f
-        var endY = centerY + direction * distance / 2f
-
-        startY = startY.coerceIn(minY, maxY)
-        endY = endY.coerceIn(minY, maxY)
+        var startY = (centerY - direction * distance / 2f).coerceIn(minY, maxY)
+        var endY = (centerY + direction * distance / 2f).coerceIn(minY, maxY)
 
         if (abs(startY - endY) < 2f) {
-            startY = if (centerY > (minY + maxY) / 2f) {
-                maxY
-            } else {
-                minY
-            }
-
+            startY = if (centerY > (minY + maxY) / 2f) maxY else minY
             endY = if (startY == minY) maxY else minY
         }
 
@@ -978,42 +965,25 @@ class MacroAccessibilityService : AccessibilityService() {
             lineTo(x, endY)
         }
 
-        // مدت حرکت ثابت می‌ماند تا تغییر سرعت باعث کوتاه‌شدن حرکت نشود.
-        val duration = (step.delay * 0.65f)
-            .toLong()
-            .coerceIn(180L, 650L)
+        val duration = (step.delay * 0.65f).toLong().coerceIn(180L, 650L)
 
         val gesture = GestureDescription.Builder()
-            .addStroke(
-                GestureDescription.StrokeDescription(
-                    path,
-                    0,
-                    duration
-                )
-            )
+            .addStroke(GestureDescription.StrokeDescription(path, 0, duration))
             .build()
 
         val accepted = dispatchGesture(
             gesture,
             object : GestureResultCallback() {
-                override fun onCompleted(
-                    gestureDescription: GestureDescription?
-                ) {
-                    if (playing && session == playbackToken) {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    if (hasValidLicense() && playing && session == playbackToken) {
                         runNext(session)
                     }
                 }
 
-                override fun onCancelled(
-                    gestureDescription: GestureDescription?
-                ) {
+                override fun onCancelled(gestureDescription: GestureDescription?) {
                     if (playing && session == playbackToken) {
                         status?.text = "اسکرول لغو شد"
-
-                        handler.postDelayed(
-                            { runNext(session) },
-                            150L
-                        )
+                        handler.postDelayed({ runNext(session) }, 150L)
                     }
                 }
             },
@@ -1022,11 +992,7 @@ class MacroAccessibilityService : AccessibilityService() {
 
         if (!accepted && playing && session == playbackToken) {
             status?.text = "اجرای اسکرول پذیرفته نشد"
-
-            handler.postDelayed(
-                { runNext(session) },
-                250L
-            )
+            handler.postDelayed({ runNext(session) }, 250L)
         }
     }
 
@@ -1036,22 +1002,19 @@ class MacroAccessibilityService : AccessibilityService() {
         y: Int,
         forward: Boolean
     ): Boolean {
-        if (node == null) return false
+        if (!hasValidLicense() || node == null) return false
 
         val bounds = Rect()
         node.getBoundsInScreen(bounds)
-
         if (!bounds.contains(x, y)) return false
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-
             val scrolled = try {
                 performScrollAtPoint(child, x, y, forward)
             } finally {
                 child.recycle()
             }
-
             if (scrolled) return true
         }
 
@@ -1061,7 +1024,6 @@ class MacroAccessibilityService : AccessibilityService() {
             } else {
                 AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
             }
-
             if (node.performAction(action)) return true
         }
 
@@ -1072,7 +1034,7 @@ class MacroAccessibilityService : AccessibilityService() {
         node: AccessibilityNodeInfo?,
         forward: Boolean
     ): Boolean {
-        if (node == null) return false
+        if (!hasValidLicense() || node == null) return false
 
         if (node.isScrollable) {
             val action = if (forward) {
@@ -1080,19 +1042,16 @@ class MacroAccessibilityService : AccessibilityService() {
             } else {
                 AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
             }
-
             if (node.performAction(action)) return true
         }
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-
             val scrolled = try {
                 performScrollOnNode(child, forward)
             } finally {
                 child.recycle()
             }
-
             if (scrolled) return true
         }
 
@@ -1100,11 +1059,8 @@ class MacroAccessibilityService : AccessibilityService() {
     }
 
     private fun formatSpeed(value: Float): String =
-        String.format(
-            java.util.Locale.US,
-            "%.2f",
-            value
-        ).trimEnd('0').trimEnd('.')
+        String.format(java.util.Locale.US, "%.2f", value)
+            .trimEnd('0').trimEnd('.')
 
     private fun updateSpeedLabel() {
         speedLabel?.text = "سرعت ${formatSpeed(playbackSpeed)}×"
@@ -1116,7 +1072,7 @@ class MacroAccessibilityService : AccessibilityService() {
     }
 
     private fun collapseToBubble() {
-        if (panel == null || panelCollapsed) return
+        if (!hasValidLicense() || panel == null || panelCollapsed) return
 
         val oldParams = panelParams
 
@@ -1138,8 +1094,7 @@ class MacroAccessibilityService : AccessibilityService() {
             gravity = Gravity.CENTER
             setTextColor(0xFFFFFFFF.toInt())
             setBackgroundColor(0xFF4258A8.toInt())
-            contentDescription =
-                "Touch Loop؛ لمس برای بازکردن پنل و کشیدن برای جابه‌جایی"
+            contentDescription = "Touch Loop؛ لمس برای بازکردن پنل و کشیدن برای جابه‌جایی"
         }
 
         val params = WindowManager.LayoutParams(
@@ -1166,6 +1121,11 @@ class MacroAccessibilityService : AccessibilityService() {
         val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
 
         bubbleView.setOnTouchListener { view, event ->
+            if (!hasValidLicense()) {
+                removePanel()
+                return@setOnTouchListener true
+            }
+
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
                     downX = event.rawX
@@ -1180,23 +1140,16 @@ class MacroAccessibilityService : AccessibilityService() {
                     val dx = (event.rawX - downX).toInt()
                     val dy = (event.rawY - downY).toInt()
 
-                    if (abs(dx) > touchSlop || abs(dy) > touchSlop) {
-                        moved = true
-                    }
+                    if (abs(dx) > touchSlop || abs(dy) > touchSlop) moved = true
 
                     if (moved) {
                         params.x = (initialX + dx).coerceIn(
                             0,
-                            (
-                                resources.displayMetrics.widthPixels - size
-                            ).coerceAtLeast(0)
+                            (resources.displayMetrics.widthPixels - size).coerceAtLeast(0)
                         )
-
                         params.y = (initialY + dy).coerceIn(
                             0,
-                            (
-                                resources.displayMetrics.heightPixels - size
-                            ).coerceAtLeast(0)
+                            (resources.displayMetrics.heightPixels - size).coerceAtLeast(0)
                         )
 
                         try {
@@ -1204,7 +1157,6 @@ class MacroAccessibilityService : AccessibilityService() {
                         } catch (_: Exception) {
                         }
                     }
-
                     true
                 }
 
@@ -1229,6 +1181,11 @@ class MacroAccessibilityService : AccessibilityService() {
     }
 
     private fun expandFromBubble() {
+        if (!hasValidLicense()) {
+            removePanel()
+            return
+        }
+
         bubble?.let {
             try {
                 wm.removeView(it)
@@ -1237,7 +1194,6 @@ class MacroAccessibilityService : AccessibilityService() {
         }
 
         val oldParams = bubbleParams
-
         bubble = null
         bubbleParams = null
         panelCollapsed = false
@@ -1248,7 +1204,6 @@ class MacroAccessibilityService : AccessibilityService() {
         if (params != null && oldParams != null) {
             params.x = oldParams.x
             params.y = oldParams.y
-
             try {
                 panel?.let { wm.updateViewLayout(it, params) }
             } catch (_: Exception) {
@@ -1256,12 +1211,6 @@ class MacroAccessibilityService : AccessibilityService() {
         }
     }
 
-    /*
-     * فقط پخش را متوقف می‌کنیم.
-     * حذف تمام callbackهای Handler ممکن بود عملیات ضبط و ذخیره‌سازی
-     * یا callbackهای مستقل را نیز مختل کند.
-     * playbackToken باعث بی‌اثرشدن callbackهای قدیمی پخش می‌شود.
-     */
     private fun stopPlayback() {
         playing = false
         playbackToken++
@@ -1269,10 +1218,8 @@ class MacroAccessibilityService : AccessibilityService() {
 
     private fun stopAll() {
         recording = false
-
         handler.removeCallbacks(flushScrollRunnable)
         pendingScroll = null
-
         stopPlayback()
         saveMacro()
     }
@@ -1334,7 +1281,10 @@ class MacroAccessibilityService : AccessibilityService() {
     }
 
     private fun removePanel() {
-        stopAll()
+        recording = false
+        stopPlayback()
+        handler.removeCallbacks(flushScrollRunnable)
+        pendingScroll = null
         removePointPicker()
 
         panel?.let {
