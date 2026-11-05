@@ -1,7 +1,8 @@
-
 <resources>
     <string name="app_name">Touch Loop</string>
-    <string name="accessibility_description">Records accessibility click and scroll events for local macro replay. It does not record passwords or typed text.</string>
+    
+    <!-- توضیحات سرویس دسترسی (برای نمایش در تنظیمات اندروید و گوگل پلی) -->
+    <string name="accessibility_description">سرویس دسترسی Touch Loop برای ضبط و اجرای خودکار حرکات لمسی استفاده می‌شود. این سرویس فقط هنگامی فعال است که شما بخواهید یک ماکرو ضبط یا پخش کنید و هیچ اطلاعات شخصی یا متنی شما را جمع‌آوری نمی‌کند.</string>
 
     <string name="supabase_url" translatable="false">https://rkllnarnvbylpphshweu.supabase.co</string>
     <string name="supabase_publishable_key" translatable="false">sb_publishable_t8cRQM_w5THIwJvgXrYJNg_Fbxoaz6_</string>
