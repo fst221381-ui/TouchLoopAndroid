@@ -10,7 +10,6 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
-import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -74,8 +73,6 @@ class MacroAccessibilityService : AccessibilityService() {
     private var scrollStartTime: Long = 0L
 
     private val flushScrollRunnable = Runnable { flushPendingScroll() }
-
-    // حداقل اندازه مطلق پنل (برای جلوگیری از ناپدید شدن دکمه‌ها)
     private val minPanelWidthDp = 140
     private val minPanelHeightDp = 180
 
@@ -91,9 +88,7 @@ class MacroAccessibilityService : AccessibilityService() {
             }
             val expiry = formatter.parse(expiryText.take(19)) ?: return false
             System.currentTimeMillis() < expiry.time
-        } catch (_: Exception) {
-            false
-        }
+        } catch (_: Exception) { false }
     }
 
     override fun onServiceConnected() {
@@ -172,15 +167,11 @@ class MacroAccessibilityService : AccessibilityService() {
     override fun onInterrupt() { stopAll() }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
-
-    // ✅ ضریب مقیاس بر اساس عرض فعلی پنل (دکمه‌ها متناسب کوچک/بزرگ می‌شوند)
     private fun scaleFactor(): Float = (panelWidthDp / 220f).coerceIn(0.6f, 1.4f)
-
     private fun scaledDp(value: Int): Int = dp((value * scaleFactor()).toInt().coerceAtLeast(1))
 
     private fun showPanel() {
         if (!hasValidLicense() || panel != null) return
-
         val scale = scaleFactor()
 
         val root = LinearLayout(this).apply {
@@ -221,7 +212,6 @@ class MacroAccessibilityService : AccessibilityService() {
             text = label
             textSize = 11f * scale
             minimumHeight = scaledDp(32)
-            minHeight = scaledDp(32)
             setPadding(scaledDp(4), scaledDp(2), scaledDp(4), scaledDp(2))
             isAllCaps = false
             setOnClickListener {
@@ -230,7 +220,6 @@ class MacroAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Drag Logic for Header
         var panelDragData: FloatArray? = null
         header.setOnTouchListener { _, event ->
             if (!hasValidLicense()) { removePanel(); return@setOnTouchListener true }
@@ -256,19 +245,11 @@ class MacroAccessibilityService : AccessibilityService() {
             }
         }
 
-        // ✅ ScrollView برای محتوای پنل (اگر پنل خیلی کوچک شد، دکمه‌ها اسکرول شوند)
-        val scrollView = ScrollView(this).apply {
-            isFillViewport = false
-            isVerticalScrollBarEnabled = false
-        }
-        val contentContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-        }
+        val scrollView = ScrollView(this).apply { isFillViewport = false; isVerticalScrollBarEnabled = false }
+        val contentContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
 
         contentContainer.addView(status)
         contentContainer.addView(executionReport)
-
         contentContainer.addView(button("● ضبط ماکرو") {
             stopPlayback(); handler.removeCallbacks(flushScrollRunnable); pendingScroll = null; steps.clear()
             recording = true; lastEventAt = 0L; status?.text = "در حال ضبط…"; executionReport?.visibility = View.GONE
@@ -296,7 +277,6 @@ class MacroAccessibilityService : AccessibilityService() {
             if (steps.isEmpty()) status?.text = "ماکرویی برای ویرایش نیست" else showMacroEditor()
         })
 
-        // ردیف سرعت
         val speedRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
         speedLabel = TextView(this).apply {
             textSize = 11f * scale
@@ -318,7 +298,6 @@ class MacroAccessibilityService : AccessibilityService() {
         root.addView(header)
         root.addView(scrollView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        // ✅ دستگیره تغییر اندازه در گوشه پایین-راست
         val resizeHandle = TextView(this).apply {
             text = "⋮⋮"
             textSize = 14f * scale
@@ -345,7 +324,6 @@ class MacroAccessibilityService : AccessibilityService() {
                     panelWidthDp = (data[2].toInt() + dx).coerceIn(minPanelWidthDp, 450)
                     panelHeightDp = (data[3].toInt() + dy).coerceIn(minPanelHeightDp, 800)
                     updatePanelSize()
-                    // بازسازی پنل برای اعمال scaleFactor جدید
                     removePanel()
                     showPanel()
                     true
@@ -355,10 +333,7 @@ class MacroAccessibilityService : AccessibilityService() {
             }
         }
 
-        val handleRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.END
-        }
+        val handleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END }
         handleRow.addView(resizeHandle)
         root.addView(handleRow)
 
@@ -370,122 +345,70 @@ class MacroAccessibilityService : AccessibilityService() {
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = dp(12)
-            y = dp(140)
-        }
+        ).apply { gravity = Gravity.TOP or Gravity.START; x = dp(12); y = dp(140) }
 
         panel = root
         panelParams = params
-        try {
-            wm.addView(root, params)
-            updateSpeedLabel()
-        } catch (_: Exception) {
-            panel = null
-            panelParams = null
-        }
+        try { wm.addView(root, params); updateSpeedLabel() } catch (_: Exception) { panel = null; panelParams = null }
     }
 
     private fun updateExecutionReport() {
-        if (!playing || steps.isEmpty()) {
-            executionReport?.visibility = View.GONE
-            return
-        }
+        if (!playing || steps.isEmpty()) { executionReport?.visibility = View.GONE; return }
         val current = playIndex + 1
         val total = steps.size
         val remaining = total - current
         val step = steps.getOrNull(playIndex)
-        val stepType = when (step?.kind) {
-            "TAP" -> "کلیک"
-            "SCROLL" -> "اسکرول"
-            "BACK" -> "بازگشت"
-            else -> "نامشخص"
-        }
+        val stepType = when (step?.kind) { "TAP" -> "کلیک"; "SCROLL" -> "اسکرول"; "BACK" -> "بازگشت"; else -> "نامشخص" }
         executionReport?.text = "مرحله $current از $total ($stepType) • $remaining باقی‌مانده"
     }
 
     private fun showMacroEditor() {
         val dialog = AlertDialog.Builder(this).create()
         dialog.window?.setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
+        val scrollView = ScrollView(this).apply { setPadding(dp(16), dp(16), dp(16), dp(16)); setBackgroundColor(0xFF1A1D24.toInt()) }
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(8)) }
 
-        val scrollView = ScrollView(this).apply {
-            setPadding(dp(16), dp(16), dp(16), dp(16))
-            setBackgroundColor(0xFF1A1D24.toInt())
-        }
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(8), dp(8), dp(8), dp(8))
-        }
-
-        val title = TextView(this).apply {
-            text = "ویرایش ماکرو (${steps.size} مرحله)"
-            textSize = 18f
-            setTextColor(0xFFFFFFFF.toInt())
-            gravity = Gravity.CENTER
-            setPadding(dp(8), dp(8), dp(8), dp(16))
-        }
-        container.addView(title)
+        container.addView(TextView(this).apply {
+            text = "ویرایش ماکرو (${steps.size} مرحله)"; textSize = 18f; setTextColor(0xFFFFFFFF.toInt())
+            gravity = Gravity.CENTER; setPadding(dp(8), dp(8), dp(8), dp(16))
+        })
 
         steps.forEachIndexed { index, step ->
-            val stepView = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(8), dp(8), dp(8), dp(8))
-                setBackgroundColor(0xFF2A2D35.toInt())
-            }
+            val stepView = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(8)); setBackgroundColor(0xFF2A2D35.toInt()) }
             val stepText = TextView(this).apply {
-                val type = when (step.kind) {
-                    "TAP" -> "کلیک"
-                    "SCROLL" -> "اسکرول"
-                    "BACK" -> "بازگشت"
-                    else -> "نامشخص"
-                }
-                text = "${index + 1}. $type"
-                textSize = 14f
-                setTextColor(0xFFFFFFFF.toInt())
+                val type = when (step.kind) { "TAP" -> "کلیک"; "SCROLL" -> "اسکرول"; "BACK" -> "بازگشت"; else -> "نامشخص" }
+                text = "${index + 1}. $type"; textSize = 14f; setTextColor(0xFFFFFFFF.toInt())
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }
             stepView.addView(stepText)
 
             val deleteBtn = Button(this).apply {
-                text = "حذف"
-                textSize = 11f
-                setPadding(dp(8), dp(4), dp(8), dp(4))
-                setOnClickListener {
-                    steps.removeAt(index); saveMacro(); dialog.dismiss(); showMacroEditor()
-                }
+                text = "حذف"; textSize = 11f; setPadding(dp(8), dp(4), dp(8), dp(4))
+                setOnClickListener { steps.removeAt(index); saveMacro(); dialog.dismiss(); showMacroEditor() }
             }
             stepView.addView(deleteBtn)
 
             if (index > 0) {
                 val upBtn = Button(this).apply {
                     text = "↑"; textSize = 14f; setPadding(dp(8), dp(4), dp(8), dp(4))
-                    setOnClickListener {
-                        val temp = steps[index]; steps[index] = steps[index - 1]; steps[index - 1] = temp
-                        saveMacro(); dialog.dismiss(); showMacroEditor()
-                    }
+                    setOnClickListener { val temp = steps[index]; steps[index] = steps[index - 1]; steps[index - 1] = temp; saveMacro(); dialog.dismiss(); showMacroEditor() }
                 }
                 stepView.addView(upBtn)
             }
             if (index < steps.size - 1) {
                 val downBtn = Button(this).apply {
                     text = "↓"; textSize = 14f; setPadding(dp(8), dp(4), dp(8), dp(4))
-                    setOnClickListener {
-                        val temp = steps[index]; steps[index] = steps[index + 1]; steps[index + 1] = temp
-                        saveMacro(); dialog.dismiss(); showMacroEditor()
-                    }
+                    setOnClickListener { val temp = steps[index]; steps[index] = steps[index + 1]; steps[index + 1] = temp; saveMacro(); dialog.dismiss(); showMacroEditor() }
                 }
                 stepView.addView(downBtn)
             }
             container.addView(stepView)
         }
 
-        val closeBtn = Button(this).apply {
+        container.addView(Button(this).apply {
             text = "بستن"; textSize = 14f; setPadding(dp(16), dp(12), dp(16), dp(12))
             setOnClickListener { dialog.dismiss() }
-        }
-        container.addView(closeBtn)
+        })
         scrollView.addView(container)
         dialog.setView(scrollView)
         dialog.show()
@@ -498,19 +421,15 @@ class MacroAccessibilityService : AccessibilityService() {
         params.height = dp(panelHeightDp)
         try { panel?.let { wm.updateViewLayout(it, params) } } catch (_: Exception) {}
         getSharedPreferences("touch_loop", MODE_PRIVATE).edit()
-            .putInt("panel_width_dp", panelWidthDp)
-            .putInt("panel_height_dp", panelHeightDp)
-            .apply()
+            .putInt("panel_width_dp", panelWidthDp).putInt("panel_height_dp", panelHeightDp).apply()
     }
 
     private fun showPointPicker() {
         if (!hasValidLicense() || pointPicker != null) return
         val root = FrameLayout(this).apply { setBackgroundColor(0x22000000) }
         val hint = TextView(this).apply {
-            text = "برای ثبت کلیک، روی محل موردنظر بزن."
-            textSize = 16f; setTextColor(0xFFFFFFFF.toInt())
-            setPadding(dp(18), dp(18), dp(18), dp(18))
-            setBackgroundColor(0xE6202124.toInt())
+            text = "برای ثبت کلیک، روی محل موردنظر بزن."; textSize = 16f; setTextColor(0xFFFFFFFF.toInt())
+            setPadding(dp(18), dp(18), dp(18), dp(18)); setBackgroundColor(0xE6202124.toInt())
         }
         root.addView(hint, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP))
         val cancel = Button(this).apply {
@@ -526,9 +445,7 @@ class MacroAccessibilityService : AccessibilityService() {
                 removePointPicker()
                 addRecordedStep(Step(kind = "TAP", x = x, y = y, delay = 350L))
                 ignoreEventsUntil = System.currentTimeMillis() + 800L
-                handler.postDelayed({
-                    if (hasValidLicense()) dispatchTap(x, y) { status?.text = "کلیک ثبت شد" }
-                }, 100L)
+                handler.postDelayed({ if (hasValidLicense()) dispatchTap(x, y) { status?.text = "کلیک ثبت شد" } }, 100L)
                 true
             } else true
         }
@@ -582,7 +499,8 @@ class MacroAccessibilityService : AccessibilityService() {
         if (Build.VERSION.SDK_INT >= 24) {
             val path = Path().apply { moveTo(x, y) }
             val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 70L)).build()
-            dispatchGesture(gesture, object : GestureDescription.GestureResultCallback() {
+            // ✅ اصلاح شده: استفاده از AccessibilityService.GestureResultCallback
+            dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
                 override fun onCompleted(gestureDescription: GestureDescription?) { onDone?.invoke() }
                 override fun onCancelled(gestureDescription: GestureDescription?) { onDone?.invoke() }
             }, null)
@@ -600,7 +518,8 @@ class MacroAccessibilityService : AccessibilityService() {
         if (Build.VERSION.SDK_INT >= 24) {
             val path = Path().apply { moveTo(step.x, step.y) }
             val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 70L)).build()
-            dispatchGesture(gesture, object : GestureDescription.GestureResultCallback() {
+            // ✅ اصلاح شده: استفاده از AccessibilityService.GestureResultCallback
+            dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
                 override fun onCompleted(gestureDescription: GestureDescription?) { runNext(session) }
                 override fun onCancelled(gestureDescription: GestureDescription?) {
                     if (playing && session == playbackToken) handler.postDelayed({ runNext(session) }, 100L)
@@ -639,9 +558,7 @@ class MacroAccessibilityService : AccessibilityService() {
         if (Build.VERSION.SDK_INT < 24) {
             val root = rootInActiveWindow
             val forward = step.scrollDeltaY >= 0
-            val scrolled = try {
-                performScrollAtPoint(root, step.x.toInt(), step.y.toInt(), forward) || performScrollOnNode(root, forward)
-            } finally { root?.recycle() }
+            val scrolled = try { performScrollAtPoint(root, step.x.toInt(), step.y.toInt(), forward) || performScrollOnNode(root, forward) } finally { root?.recycle() }
             if (!scrolled) status?.text = "این صفحه اسکرول قابل‌دسترسی ندارد"
             val baseDuration = if (step.duration > 0) step.duration else (step.delay * 0.8f).toLong().coerceIn(200L, 1500L)
             val duration = (baseDuration / playbackSpeed).toLong().coerceIn(150L, 3000L)
@@ -672,7 +589,9 @@ class MacroAccessibilityService : AccessibilityService() {
         val baseDuration = if (step.duration > 0) step.duration else (step.delay * 0.8f).toLong().coerceIn(200L, 1500L)
         val duration = (baseDuration / playbackSpeed).toLong().coerceIn(100L, 3000L)
         val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, duration)).build()
-        val accepted = dispatchGesture(gesture, object : GestureDescription.GestureResultCallback() {
+        
+        // ✅ اصلاح شده: استفاده از AccessibilityService.GestureResultCallback
+        val accepted = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
                 if (hasValidLicense() && playing && session == playbackToken) handler.postDelayed({ runNext(session) }, 50L)
             }
@@ -680,6 +599,7 @@ class MacroAccessibilityService : AccessibilityService() {
                 if (playing && session == playbackToken) { status?.text = "اسکرول لغو شد"; handler.postDelayed({ runNext(session) }, 150L) }
             }
         }, null)
+        
         if (!accepted && playing && session == playbackToken) { status?.text = "اجرای اسکرول پذیرفته نشد"; handler.postDelayed({ runNext(session) }, 250L) }
     }
 
@@ -758,8 +678,7 @@ class MacroAccessibilityService : AccessibilityService() {
             }
         }
         bubble = bubbleView
-        try { wm.addView(bubbleView, params) }
-        catch (_: Exception) { bubble = null; panelCollapsed = false; showPanel() }
+        try { wm.addView(bubbleView, params) } catch (_: Exception) { bubble = null; panelCollapsed = false; showPanel() }
     }
 
     private fun expandFromBubble() {
