@@ -42,8 +42,9 @@ class MainActivity : Activity() {
         }
 
         codeInput = EditText(this).apply {
-            hint = "کد فعال‌سازی را وارد کن"
-            singleLine = true
+    hint = "کد فعال‌سازی را وارد کن"
+    setSingleLine(true)
+        
         }
 
         status = TextView(this).apply {
