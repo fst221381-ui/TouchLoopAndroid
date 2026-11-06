@@ -185,60 +185,82 @@ class MainActivity : Activity() {
     }
 
     private fun showHome() {
-        adminToken = null
-        newRoot()
-        addHeader()
-        
-        fetchAndShowAnnouncement()
-        
-        if (prefs.getBoolean("license_active", false)) {
-            val expiry = prefs.getString("license_expires_at", "—") ?: "—"
-            addCard().apply {
-                addText("✅ لایسنس فعال است", 21f, green, true, true)
-                addText("تا تاریخ: ${formatPersianDateTime(expiry)}", 14f, muted, false, true)
-            }
-            addSpace(12)
-            
-            addButton("📂 مدیریت ماکروهای ذخیره‌شده") {
-                showMacrosManager()
-            }
-            
-            addButton("⚙️ فعال‌سازی سرویس دسترسی (Accessibility)", color = cyan) {
-                openAccessibilityService()
-            }
-            
-            addButton("🔓 رفع محدودیت دسترسی (Allow restricted settings)", color = orange) {
-                openRestrictedSettings()
-            }
-            
-            addSpace(8)
-            addCard().apply {
-                addText("📋 راهنمای دقیق فعال‌سازی (اندروید ۱۳+)", 16f, cyan, true, true)
-                addText("۱. روی دکمه «⚙️ فعال‌سازی سرویس دسترسی (Accessibility)» بزنید.", 13f, white)
-                addText("۲. در صفحه‌ای که باز می‌شود، وارد بخش «برنامه‌های نصب‌شده» شوید و روی «Touch Loop automation» کلیک کنید.", 13f, white)
-                addText("(در این مرحله فعال نمی‌شود و خطا می‌دهد؛ این طبیعی است.)", 12f, muted)
-                addText("۳. به برنامه Touch Loop برگردید.", 13f, white)
-                addText("۴. حالا روی دکمه «🔓 رفع محدودیت دسترسی (Allow restricted settings)» بزنید.", 13f, white)
-                addText("۵. در صفحه‌ای که باز می‌شود، روی سه نقطه (⋮) بالای صفحه بزنید و گزینه «Allow restricted settings / اجازه تنظیمات محدود» را انتخاب و تأیید کنید.", 13f, white)
-                addText("۶. دوباره به برنامه برگردید و روی دکمه «⚙️ فعال‌سازی سرویس دسترسی (Accessibility)» بزنید.", 13f, white)
-                addText("۷. دوباره وارد بخش «برنامه‌های نصب‌شده» شوید.", 13f, white)
-                addText("۸. حالا می‌توانید «Touch Loop automation» را روشن کنید و OK را بزنید. 🎉", 13f, white)
-            }
-            
-            addSpace(12)
-            addButton("ورود به پنل مدیریت") { showAdminLogin() }
-        } else {
-            addCard().apply {
-                addText("خوش آمدی", 21f, white, true, true)
-                addText("برای ادامه، نوع ورود را انتخاب کن.", 15f, muted, false, true)
-            }
-            addSpace(12)
-            addButton("ورود مدیر") { showAdminLogin() }
-            addButton("ورود کاربر") { showUserScreen() }
+    private fun showHome() {
+    adminToken = null
+    newRoot()
+    addHeader()
+    
+    fetchAndShowAnnouncement()
+    
+    // ✅ بررسی مجدد لایسنس در هر بار ورود به صفحه اصلی
+    if (!hasValidLicense()) {
+        // لایسنس منقضی یا مسدود شده - نمایش صفحه ورود کد
+        addCard().apply {
+            addText("❌ لایسنس منقضی یا مسدود شده است", 21f, red, true, true)
+            addText("برای ادامه استفاده، لطفاً کد فعال‌سازی جدید وارد کنید.", 14f, muted, false, true)
         }
+        addSpace(12)
+        addButton("ورود کد فعال‌سازی جدید") { showUserScreen() }
         addSpace(16)
-        addText("برای فعال‌سازی برنامه، ورود کاربر و کد فعال‌سازی لازم است.", 13f, muted, false, true)
+        return
     }
+    
+    val expiry = prefs.getString("license_expires_at", "—") ?: "—"
+    addCard().apply {
+        addText("✅ لایسنس فعال است", 21f, green, true, true)
+        addText("تا تاریخ: ${formatPersianDateTime(expiry)}", 14f, muted, false, true)
+    }
+    addSpace(12)
+    
+    addButton("📂 مدیریت ماکروهای ذخیره‌شده") {
+        showMacrosManager()
+    }
+    
+    addButton("️ فعال‌سازی سرویس دسترسی (Accessibility)", color = cyan) {
+        openAccessibilityService()
+    }
+    
+    addButton("🔓 رفع محدودیت دسترسی (Allow restricted settings)", color = orange) {
+        openRestrictedSettings()
+    }
+    
+    addSpace(8)
+    addCard().apply {
+        addText("📋 راهنمای دقیق فعال‌سازی (اندروید ۱۳+)", 16f, cyan, true, true)
+        addText(". روی دکمه «⚙️ فعال‌سازی سرویس دسترسی (Accessibility)» بزنید.", 13f, white)
+        addText("۲. در صفحه‌ای که باز می‌شود، وارد بخش «برنامه‌های نصب‌شده» شوید و روی «Touch Loop automation» کلیک کنید.", 13f, white)
+        addText("(در این مرحله فعال نمی‌شود و خطا می‌دهد؛ این طبیعی است.)", 12f, muted)
+        addText("۳. به برنامه Touch Loop برگردید.", 13f, white)
+        addText("۴. حالا روی دکمه «🔓 رفع محدودیت دسترسی (Allow restricted settings)» بزنید.", 13f, white)
+        addText(". در صفحه‌ای که باز می‌شود، روی سه نقطه (⋮) بالای صفحه بزنید و گزینه «Allow restricted settings / اجازه تنظیمات محدود» را انتخاب و تأیید کنید.", 13f, white)
+        addText("۶. دوباره به برنامه برگردید و روی دکمه «️ فعال‌سازی سرویس دسترسی (Accessibility)» بزنید.", 13f, white)
+        addText("۷. دوباره وارد بخش «برنامه‌های نصب‌شده» شوید.", 13f, white)
+        addText("۸. حالا می‌توانید «Touch Loop automation» را روشن کنید و OK را بزنید. 🎉", 13f, white)
+    }
+    
+    addSpace(12)
+    addButton("ورود به پنل مدیریت") { showAdminLogin() }
+}
+
+// ✅ تابع بررسی لایسنس
+private fun hasValidLicense(): Boolean {
+    if (!prefs.getBoolean("license_active", false)) return false
+    val currentDevice = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: return false
+    if (prefs.getString("license_device_id", "") != currentDevice) return false
+    val expiryText = prefs.getString("license_expires_at", null) ?: return false
+    return try {
+        val formatter = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).apply {
+            timeZone = java.util.TimeZone.getTimeZone("UTC")
+        }
+        val expiry = formatter.parse(expiryText.take(19)) ?: return false
+        val isValid = System.currentTimeMillis() < expiry.time
+        if (!isValid) {
+            // لایسنس منقضی شده
+            prefs.edit().putBoolean("license_active", false).apply()
+        }
+        isValid
+    } catch (_: Exception) { false }
+}
 
     private fun showMacrosManager() {
         val dialog = AlertDialog.Builder(this).create()
