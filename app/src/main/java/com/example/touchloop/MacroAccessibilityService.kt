@@ -58,7 +58,11 @@ class MacroAccessibilityService : AccessibilityService() {
     private var panelParams: WindowManager.LayoutParams? = null
     private var bubbleParams: WindowManager.LayoutParams? = null
     private var panelCollapsed = false
+    
+    // ✅ قفل تاچ اختیاری (دستی)
     private var touchLockOverlay: View? = null
+    private var isTouchLocked = false
+    private var lockButton: Button? = null
 
     private var panelWidthDp = 220
     private var panelHeightDp = 320
@@ -104,8 +108,6 @@ class MacroAccessibilityService : AccessibilityService() {
         panelHeightDp = prefs.getInt("panel_height_dp", 320).coerceIn(minPanelHeightDp, 800)
         showPanel()
         updateSpeedLabel()
-        // بررسی ماکروی در انتظار برای اجرا
-        checkAndRunPendingMacro()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -275,11 +277,29 @@ class MacroAccessibilityService : AccessibilityService() {
             if (recording) { handler.removeCallbacks(flushScrollRunnable); flushPendingScroll() }
             recording = false; stopPlayback(); saveMacro()
             if (steps.isEmpty()) { status?.text = "ابتدا ماکرو ضبط کن" }
-            else { playbackToken++; loopCount = 1; playing = true; playIndex = 0; status?.text = "در حال پخش…"; updateExecutionReport(); executionReport?.visibility = View.VISIBLE; showTouchLock(); runNext(playbackToken) }
+            else { 
+                playbackToken++; loopCount = 1; playing = true; playIndex = 0
+                status?.text = "در حال پخش…"
+                updateExecutionReport()
+                executionReport?.visibility = View.VISIBLE
+                // ✅ قفل خودکار هنگام پخش حذف شد
+                runNext(playbackToken) 
+            }
         })
         contentContainer.addView(button("✎ ویرایش") {
             if (steps.isEmpty()) status?.text = "ماکرویی برای ویرایش نیست" else showMacroEditor()
         })
+
+        // ✅ دکمه جدید قفل تاچ (اختیاری)
+        lockButton = button(if (isTouchLocked) "🔓 باز کردن قفل" else "🔒 قفل صفحه") {
+            if (isTouchLocked) {
+                hideTouchLock()
+                lockButton?.text = "🔒 قفل صفحه"
+            } else {
+                showTouchLock()
+                lockButton?.text = "🔓 باز کردن قفل"
+            }
+        }.also { contentContainer.addView(it) }
 
         val speedRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
         speedLabel = TextView(this).apply {
@@ -409,10 +429,7 @@ class MacroAccessibilityService : AccessibilityService() {
 
         container.addView(Button(this).apply {
             text = "➕ افزودن مرحله جدید"; textSize = 14f; setPadding(dp(16), dp(12), dp(16), dp(12))
-            setOnClickListener { 
-                dialog.dismiss()
-                showAddStepDialog()
-            }
+            setOnClickListener { dialog.dismiss(); showAddStepDialog() }
         })
 
         container.addView(Button(this).apply {
@@ -460,10 +477,12 @@ class MacroAccessibilityService : AccessibilityService() {
             .putInt("panel_width_dp", panelWidthDp).putInt("panel_height_dp", panelHeightDp).apply()
     }
 
+    // ✅ قفل تاچ اختیاری (با FLAG_NOT_TOUCH_MODAL برای اجازه کلیک روی پنل/حباب)
     private fun showTouchLock() {
         if (touchLockOverlay != null) return
+        isTouchLocked = true
         touchLockOverlay = View(this).apply {
-            setBackgroundColor(0x00000000)
+            setBackgroundColor(0x22000000) // شفاف با ته‌رنگ
             setOnTouchListener { _, _ -> true }
         }
         val params = WindowManager.LayoutParams(
@@ -476,6 +495,7 @@ class MacroAccessibilityService : AccessibilityService() {
         )
         try { 
             wm.addView(touchLockOverlay, params)
+            // پنل و حباب را بالای overlay بیاور
             val currentPanel = panel
             val currentParams = panelParams
             if (currentPanel != null && currentParams != null) {
@@ -492,8 +512,42 @@ class MacroAccessibilityService : AccessibilityService() {
     }
 
     private fun hideTouchLock() {
+        isTouchLocked = false
         touchLockOverlay?.let { try { wm.removeView(it) } catch (_: Exception) {} }
         touchLockOverlay = null
+    }
+
+    // ✅ حذف موقت overlay قبل از اجرای gesture تا ماکرو بدون اختلال اجرا شود
+    private fun temporarilyHideLockForGesture(action: () -> Unit) {
+        if (!isTouchLocked || touchLockOverlay == null) {
+            action()
+            return
+        }
+        val overlay = touchLockOverlay
+        try { wm.removeView(overlay) } catch (_: Exception) {}
+        action()
+        // بعد از gesture، دوباره overlay را نمایش می‌دهیم
+        handler.postDelayed({
+            if (isTouchLocked && overlay != null && touchLockOverlay === overlay) {
+                val params = WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or 
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or 
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                    PixelFormat.TRANSLUCENT
+                )
+                try { 
+                    wm.addView(overlay, params)
+                    val currentPanel = panel
+                    val currentParams = panelParams
+                    if (currentPanel != null && currentParams != null) {
+                        wm.removeView(currentPanel)
+                        wm.addView(currentPanel, currentParams)
+                    }
+                } catch (_: Exception) {}
+            }
+        }, 150L)
     }
 
     private fun showPointPicker() {
@@ -591,12 +645,16 @@ class MacroAccessibilityService : AccessibilityService() {
         if (Build.VERSION.SDK_INT >= 24) {
             val path = Path().apply { moveTo(step.x, step.y) }
             val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 70L)).build()
-            dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
-                override fun onCompleted(gestureDescription: GestureDescription?) { runNext(session) }
-                override fun onCancelled(gestureDescription: GestureDescription?) {
-                    if (playing && session == playbackToken) handler.postDelayed({ runNext(session) }, 100L)
-                }
-            }, null)
+            
+            // ✅ حذف موقت overlay قبل از gesture
+            temporarilyHideLockForGesture {
+                dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+                    override fun onCompleted(gestureDescription: GestureDescription?) { runNext(session) }
+                    override fun onCancelled(gestureDescription: GestureDescription?) {
+                        if (playing && session == playbackToken) handler.postDelayed({ runNext(session) }, 100L)
+                    }
+                }, null)
+            }
         } else {
             val root = rootInActiveWindow
             try { if (!clickNodeAt(root, step.x.toInt(), step.y.toInt())) status?.text = "کلیک در اندروید ۶ قابل اجرا نیست" }
@@ -662,16 +720,19 @@ class MacroAccessibilityService : AccessibilityService() {
         val duration = (baseDuration / playbackSpeed).toLong().coerceIn(100L, 3000L)
         val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, duration)).build()
         
-        val accepted = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
-            override fun onCompleted(gestureDescription: GestureDescription?) {
-                if (hasValidLicense() && playing && session == playbackToken) handler.postDelayed({ runNext(session) }, 50L)
-            }
-            override fun onCancelled(gestureDescription: GestureDescription?) {
-                if (playing && session == playbackToken) { status?.text = "اسکرول لغو شد"; handler.postDelayed({ runNext(session) }, 150L) }
-            }
-        }, null)
-        
-        if (!accepted && playing && session == playbackToken) { status?.text = "اجرای اسکرول پذیرفته نشد"; handler.postDelayed({ runNext(session) }, 250L) }
+        // ✅ حذف موقت overlay قبل از gesture
+        temporarilyHideLockForGesture {
+            val accepted = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    if (hasValidLicense() && playing && session == playbackToken) handler.postDelayed({ runNext(session) }, 50L)
+                }
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    if (playing && session == playbackToken) { status?.text = "اسکرول لغو شد"; handler.postDelayed({ runNext(session) }, 150L) }
+                }
+            }, null)
+            
+            if (!accepted && playing && session == playbackToken) { status?.text = "اجرای اسکرول پذیرفته نشد"; handler.postDelayed({ runNext(session) }, 250L) }
+        }
     }
 
     private fun performScrollAtPoint(node: AccessibilityNodeInfo?, x: Int, y: Int, forward: Boolean): Boolean {
@@ -770,7 +831,6 @@ class MacroAccessibilityService : AccessibilityService() {
         playIndex = 0
         loopCount = 0
         executionReport?.visibility = View.GONE
-        hideTouchLock()
     }
 
     private fun stopAll() {
@@ -778,14 +838,8 @@ class MacroAccessibilityService : AccessibilityService() {
         stopPlayback(); saveMacro()
     }
 
-    // ✅ ذخیره ماکروی جاری (برای استفاده در ضبط و پخش)
     private fun saveMacro() {
-        saveCurrentMacro()
-    }
-
-    private fun saveCurrentMacro() {
-        val rootObj = JSONObject()
-        rootObj.put("version", 2)
+        val rootObj = JSONObject(); rootObj.put("version", 2)
         val array = JSONArray()
         steps.forEach { step ->
             array.put(JSONObject().apply {
@@ -795,126 +849,15 @@ class MacroAccessibilityService : AccessibilityService() {
             })
         }
         rootObj.put("steps", array)
-        getSharedPreferences("touch_loop", MODE_PRIVATE).edit().putString("current_macro", rootObj.toString()).apply()
+        getSharedPreferences("touch_loop", MODE_PRIVATE).edit().putString("macro", rootObj.toString()).apply()
     }
 
-    // ✅ ذخیره ماکرو با نام (برای مدیریت چندین ماکرو)
-    fun saveMacroWithName(name: String): Boolean {
-        if (steps.isEmpty()) return false
-        val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
-        val savedMacrosJson = prefs.getString("saved_macros", "[]") ?: "[]"
-        val savedMacros = JSONArray(savedMacrosJson)
-        
-        val macroObj = JSONObject()
-        macroObj.put("name", name)
-        macroObj.put("step_count", steps.size)
-        val stepsArray = JSONArray()
-        steps.forEach { step ->
-            stepsArray.put(JSONObject().apply {
-                put("kind", step.kind); put("x", step.x); put("y", step.y)
-                put("left", step.left); put("top", step.top); put("right", step.right); put("bottom", step.bottom)
-                put("delay", step.delay); put("duration", step.duration); put("scrollDeltaY", step.scrollDeltaY)
-            })
-        }
-        macroObj.put("steps", stepsArray)
-        savedMacros.put(macroObj)
-        
-        prefs.edit().putString("saved_macros", savedMacros.toString()).apply()
-        return true
-    }
-
-    // ✅ بارگذاری ماکرو با نام
-    fun loadMacroByName(name: String): Boolean {
-        val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
-        val savedMacrosJson = prefs.getString("saved_macros", "[]") ?: "[]"
-        val savedMacros = JSONArray(savedMacrosJson)
-        
-        for (i in 0 until savedMacros.length()) {
-            val macro = savedMacros.optJSONObject(i) ?: continue
-            if (macro.optString("name") == name) {
-                steps.clear()
-                val stepsArray = macro.optJSONArray("steps") ?: return false
-                for (j in 0 until stepsArray.length()) {
-                    val obj = stepsArray.getJSONObject(j)
-                    steps.add(Step(
-                        kind = obj.getString("kind"),
-                        x = obj.optDouble("x", 0.0).toFloat(),
-                        y = obj.optDouble("y", 0.0).toFloat(),
-                        left = obj.optInt("left", 0), top = obj.optInt("top", 0),
-                        right = obj.optInt("right", 0), bottom = obj.optInt("bottom", 0),
-                        delay = obj.optLong("delay", 350L),
-                        duration = obj.optLong("duration", 0L),
-                        scrollDeltaY = obj.optInt("scrollDeltaY", 0)
-                    ))
-                }
-                saveCurrentMacro()
-                return true
-            }
-        }
-        return false
-    }
-
-    // ✅ لیست نام ماکروهای ذخیره‌شده
-    fun getSavedMacros(): List<String> {
-        val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
-        val savedMacrosJson = prefs.getString("saved_macros", "[]") ?: "[]"
-        val savedMacros = JSONArray(savedMacrosJson)
-        val names = mutableListOf<String>()
-        for (i in 0 until savedMacros.length()) {
-            val macro = savedMacros.optJSONObject(i) ?: continue
-            names.add(macro.optString("name", "ماکرو ${i + 1}"))
-        }
-        return names
-    }
-
-    // ✅ حذف ماکرو با نام
-    fun deleteSavedMacro(name: String) {
-        val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
-        val savedMacrosJson = prefs.getString("saved_macros", "[]") ?: "[]"
-        val savedMacros = JSONArray(savedMacrosJson)
-        val newMacros = JSONArray()
-        for (i in 0 until savedMacros.length()) {
-            val macro = savedMacros.optJSONObject(i) ?: continue
-            if (macro.optString("name") != name) {
-                newMacros.put(macro)
-            }
-        }
-        prefs.edit().putString("saved_macros", newMacros.toString()).apply()
-    }
-
-    // ✅ بررسی و اجرای ماکروی در انتظار
-    private fun checkAndRunPendingMacro() {
-        val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
-        if (prefs.getBoolean("run_pending_macro", false)) {
-            val macroName = prefs.getString("pending_macro_name", "") ?: ""
-            prefs.edit().putBoolean("run_pending_macro", false).apply()
-            if (macroName.isNotBlank()) {
-                if (loadMacroByName(macroName)) {
-                    playbackToken++
-                    loopCount = 1
-                    playing = true
-                    playIndex = 0
-                    status?.text = "در حال اجرای $macroName…"
-                    updateExecutionReport()
-                    executionReport?.visibility = View.VISIBLE
-                    showTouchLock()
-                    runNext(playbackToken)
-                } else {
-                    status?.text = "ماکرو یافت نشد: $macroName"
-                }
-            }
-        }
-    }
-
-    // ✅ بارگذاری ماکرو (با پشتیبانی از فرمت قدیمی)
     private fun loadMacro() {
         steps.clear()
-        val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
-        val raw = prefs.getString("current_macro", null) ?: prefs.getString("macro", null) ?: return
+        val raw = getSharedPreferences("touch_loop", MODE_PRIVATE).getString("macro", null) ?: return
         try {
             val array = if (raw.trim().startsWith("{")) {
-                val rootObj = JSONObject(raw)
-                rootObj.optJSONArray("steps") ?: JSONArray()
+                val rootObj = JSONObject(raw); rootObj.optJSONArray("steps") ?: JSONArray()
             } else { JSONArray(raw) }
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
@@ -935,10 +878,11 @@ class MacroAccessibilityService : AccessibilityService() {
     private fun removePanel() {
         recording = false; stopPlayback(); handler.removeCallbacks(flushScrollRunnable); pendingScroll = null
         removePointPicker()
+        hideTouchLock()
         panel?.let { try { wm.removeView(it) } catch (_: Exception) {} }
         bubble?.let { try { wm.removeView(it) } catch (_: Exception) {} }
         panel = null; bubble = null; panelParams = null; bubbleParams = null
-        panelCollapsed = false; status = null; speedLabel = null; executionReport = null
+        panelCollapsed = false; status = null; speedLabel = null; executionReport = null; lockButton = null
     }
 
     override fun onDestroy() { removePanel(); super.onDestroy() }
