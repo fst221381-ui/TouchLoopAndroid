@@ -156,11 +156,13 @@ class MainActivity : Activity() {
     }
 
     private fun showHome() {
-        adminToken = null // فقط توکن ادمین ریست می‌شود، نه لایسنس کاربر
+        adminToken = null
         newRoot()
         addHeader()
         
-        // ✅ بررسی خودکار لایسنس فعال
+        // ✅ دریافت و نمایش پیام عمومی
+        fetchAndShowAnnouncement()
+        
         if (prefs.getBoolean("license_active", false)) {
             val expiry = prefs.getString("license_expires_at", "—") ?: "—"
             addCard().apply {
@@ -169,9 +171,9 @@ class MainActivity : Activity() {
             }
             addSpace(12)
             addButton("ورود به پنل مدیریت") { showAdminLogin() }
-            addButton("مدیریت ماکروها (باز کردن پنل)") { 
+            addButton("مدیریت ماکروها") { 
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                finish() // بستن اکتیویتی تا پنل شناور دیده شود
+                finish()
             }
         } else {
             addCard().apply {
@@ -184,6 +186,38 @@ class MainActivity : Activity() {
         }
         addSpace(16)
         addText("برای فعال‌سازی برنامه، ورود کاربر و کد فعال‌سازی لازم است.", 13f, muted, false, true)
+    }
+
+    // ✅ تابع دریافت پیام عمومی
+    private fun fetchAndShowAnnouncement() {
+        runBackground(onError = { /* خطا را نادیده بگیر */ }) {
+            val response = postJson(
+                adminEndpoint,
+                JSONObject().apply { put("action", "get_announcement") },
+                useAuthToken = false
+            )
+            
+            if (response.first in 200..299) {
+                val announcement = response.second.optJSONObject("announcement")
+                if (announcement != null) {
+                    val message = announcement.optString("message", "")
+                    if (message.isNotBlank()) {
+                        runOnUiThread {
+                            showAnnouncementDialog(message)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ✅ نمایش پیام در Dialog
+    private fun showAnnouncementDialog(message: String) {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("📢 پیام مدیر")
+            .setMessage(message)
+            .setPositiveButton("بستن") { d, _ -> d.dismiss() }
+            .show()
     }
 
     private fun showUserScreen() {
@@ -267,6 +301,12 @@ class MainActivity : Activity() {
                 Toast.makeText(this, "کد کپی شد: $code", Toast.LENGTH_LONG).show()
             }
         }
+        
+        // ✅ دکمه ارسال پیام عمومی
+        addButton("📢 ارسال پیام عمومی") {
+            showCreateAnnouncementDialog()
+        }
+        
         addSpace(8)
         addText("فهرست کدها", 20f, white, true, true)
         addSpace(6)
@@ -274,11 +314,58 @@ class MainActivity : Activity() {
         val listContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(listContainer, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         addButton("بارگذاری / تازه‌سازی فهرست") { loadAdminCodes(listContainer, listStatus) }
-        
-        // ✅ دکمه بازگشت بدون خروج از نشست مدیر
         addButton("بازگشت به خانه", color = panelColor) { showHome() }
-        
         loadAdminCodes(listContainer, listStatus)
+    }
+
+    // ✅ Dialog ساخت پیام عمومی
+    private fun showCreateAnnouncementDialog() {
+        val input = EditText(this).apply {
+            hint = "پیام خود را بنویسید..."
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+        }
+        
+        android.app.AlertDialog.Builder(this)
+            .setTitle("پیام عمومی جدید")
+            .setView(input)
+            .setPositiveButton("ارسال") { _, _ ->
+                val message = input.text.toString().trim()
+                if (message.isNotBlank()) {
+                    createAnnouncement(message)
+                }
+            }
+            .setNegativeButton("لغو", null)
+            .show()
+    }
+
+    // ✅ تابع ارسال پیام
+    private fun createAnnouncement(message: String) {
+        val token = adminToken
+        if (token.isNullOrBlank()) {
+            Toast.makeText(this, "ابتدا وارد شوید", Toast.LENGTH_SHORT).show()
+            return
+        }
+        
+        runBackground(onError = { error ->
+            Toast.makeText(this, "خطا: $error", Toast.LENGTH_LONG).show()
+        }) {
+            val response = postJson(
+                adminEndpoint,
+                JSONObject().apply {
+                    put("action", "create_announcement")
+                    put("message", message)
+                },
+                token
+            )
+            
+            if (response.first in 200..299 && response.second.optBoolean("success", false)) {
+                runOnUiThread {
+                    Toast.makeText(this, "پیام با موفقیت ارسال شد", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                throw Exception(response.second.optString("message", "خطا در ارسال پیام"))
+            }
+        }
     }
 
     private fun loadAdminCodes(container: LinearLayout, status: TextView) {
@@ -324,7 +411,7 @@ class MainActivity : Activity() {
         val expires = item.optString("expires_at", "—")
         val device = item.optString("device_id", "")
         val remaining = item.optLong("remaining_seconds", 0L)
-        val codeValue = item.optString("code", "") // دریافت کد از سرور
+        val codeValue = item.optString("code", "")
 
         val statusLabel = when (statusValue) {
             "active" -> "فعال"; "unused" -> "استفاده‌نشده"
@@ -359,7 +446,6 @@ class MainActivity : Activity() {
             line("شناسه دستگاه: $device", muted)
         }
 
-        // ✅ نمایش واضح کد و دکمه کپی
         if (codeValue.isNotBlank() && codeValue != "null") {
             val codeRow = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(8), 0, dp(8))
@@ -384,7 +470,6 @@ class MainActivity : Activity() {
             line("کد در پاسخ سرور موجود نبود.", muted)
         }
 
-        // ✅ دکمه حذف برای کدهای منقضی یا مسدود شده
         if (statusValue == "blocked" || statusValue == "expired") {
             val deleteBtn = Button(this).apply {
                 text = "🗑️ حذف از لیست"
@@ -397,7 +482,6 @@ class MainActivity : Activity() {
             }
             card.addView(deleteBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
         } 
-        // دکمه مسدود/رفع مسدودی برای کدهای فعال یا استفاده‌نشده
         else if (id.isNotBlank() && (statusValue == "active" || statusValue == "unused")) {
             val actionText = if (statusValue == "blocked") "رفع مسدودی" else "مسدود کردن"
             val actionColor = if (statusValue == "blocked") green else red
@@ -428,7 +512,7 @@ class MainActivity : Activity() {
             }
             runOnUiThread {
                 Toast.makeText(this, "کد با موفقیت حذف شد.", Toast.LENGTH_SHORT).show()
-                showAdminDashboard() // رفرش کامل پنل
+                showAdminDashboard()
             }
         }
     }
@@ -480,7 +564,7 @@ class MainActivity : Activity() {
                 status.setTextColor(green)
                 codeInput.text.clear()
                 Toast.makeText(this, "فعال‌سازی انجام شد.", Toast.LENGTH_SHORT).show()
-                showHome() // بازگشت خودکار به خانه پس از فعال‌سازی
+                showHome()
             }
         }
     }
