@@ -59,8 +59,10 @@ class MacroAccessibilityService : AccessibilityService() {
     private var bubbleParams: WindowManager.LayoutParams? = null
     private var panelCollapsed = false
     
+    // ✅ متغیرهای جدید برای قفل هوشمند
     private var touchLockOverlay: View? = null
-    private var isTouchLocked = false
+    private var userWantsTouchLocked = false  // آیا کاربر دکمه قفل را زده؟
+    private var isCurrentlyLocked = false      // آیا قفل اکنون فعال است؟
     private var lockButton: Button? = null
     private var isLicenseBlocked = false
 
@@ -91,13 +93,11 @@ class MacroAccessibilityService : AccessibilityService() {
 
     private fun hasValidLicense(): Boolean {
         if (isLicenseBlocked) return false
-        
         val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
         if (!prefs.getBoolean("license_active", false)) return false
         val currentDevice = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: return false
         if (prefs.getString("license_device_id", "") != currentDevice) return false
         val expiryText = prefs.getString("license_expires_at", null) ?: return false
-        
         return try {
             val formatter = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).apply {
                 timeZone = java.util.TimeZone.getTimeZone("UTC")
@@ -106,18 +106,18 @@ class MacroAccessibilityService : AccessibilityService() {
             val isValid = System.currentTimeMillis() < expiry.time
             if (!isValid) {
                 isLicenseBlocked = true
+                prefs.edit().putBoolean("license_active", false).apply()
             }
             isValid
         } catch (_: Exception) { false }
     }
 
+    // ✅ بررسی آنلاین وضعیت لایسنس از سرور
     private fun checkLicenseStatusOnline(force: Boolean = false) {
         val now = System.currentTimeMillis()
         if (!force && (now - lastOnlineCheck) < checkInterval) return
-        
         lastOnlineCheck = now
         
-        val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
         val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: return
         
         Thread {
@@ -131,9 +131,7 @@ class MacroAccessibilityService : AccessibilityService() {
                 connection.setRequestProperty("apikey", apiKey)
                 connection.setRequestProperty("Content-Type", "application/json")
                 
-                val body = JSONObject().apply {
-                    put("device_id", deviceId)
-                }
+                val body = JSONObject().apply { put("device_id", deviceId) }
                 java.io.OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(body.toString()) }
                 
                 val responseCode = connection.responseCode
@@ -141,19 +139,27 @@ class MacroAccessibilityService : AccessibilityService() {
                 val responseText = stream?.bufferedReader()?.use { it.readText() } ?: ""
                 val responseJson = JSONObject(responseText)
                 
-                val isBlocked = responseJson.optBoolean("is_blocked", false)
-                val isExpired = responseJson.optBoolean("is_expired", false)
-                
-                if (isBlocked || isExpired) {
-                    isLicenseBlocked = true
-                    handler.post {
-                        stopAll()
-                        removePanel()
+                if (responseJson.optBoolean("success", false)) {
+                    val isValid = responseJson.optBoolean("is_valid", false)
+                    val isBlocked = responseJson.optBoolean("is_blocked", false)
+                    val isExpired = responseJson.optBoolean("is_expired", false)
+                    
+                    if (!isValid || isBlocked || isExpired) {
+                        isLicenseBlocked = true
+                        val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
+                        prefs.edit().putBoolean("license_active", false).apply()
+                        
+                        handler.post {
+                            stopAll()
+                            removePanel()
+                            hideTouchLock()
+                        }
                     }
                 }
                 
                 connection.disconnect()
             } catch (e: Exception) {
+                // خطای شبکه را نادیده بگیر
             }
         }.start()
     }
@@ -161,6 +167,10 @@ class MacroAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        
+        // ✅ بررسی آنلاین فوری هنگام اتصال Accessibility
+        checkLicenseStatusOnline(force = true)
+        
         if (!hasValidLicense()) { stopAll(); return }
         loadMacro()
         val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
@@ -169,8 +179,6 @@ class MacroAccessibilityService : AccessibilityService() {
         panelHeightDp = prefs.getInt("panel_height_dp", 320).coerceIn(minPanelHeightDp, 800)
         showPanel()
         updateSpeedLabel()
-        
-        checkLicenseStatusOnline(force = true)
         schedulePeriodicCheck()
     }
 
@@ -370,6 +378,8 @@ class MacroAccessibilityService : AccessibilityService() {
                 status?.text = "در حال پخش…"
                 updateExecutionReport()
                 executionReport?.visibility = View.VISIBLE
+                // ✅ غیرفعال کردن موقت قفل هنگام شروع پخش برای جلوگیری از تداخل
+                temporarilyUnlockForPlayback()
                 runNext(playbackToken) 
             }
         })
@@ -378,12 +388,14 @@ class MacroAccessibilityService : AccessibilityService() {
             if (steps.isEmpty()) status?.text = "ماکرویی برای ویرایش نیست" else showMacroEditor()
         })
 
-        lockButton = button(if (isTouchLocked) "🔓 باز کردن قفل" else "🔒 قفل صفحه") {
+        lockButton = button(if (userWantsTouchLocked) "🔓 باز کردن قفل" else "🔒 قفل صفحه") {
             if (!hasValidLicense()) return@button
-            if (isTouchLocked) {
+            if (userWantsTouchLocked) {
+                userWantsTouchLocked = false
                 hideTouchLock()
                 lockButton?.text = "🔒 قفل صفحه"
             } else {
+                userWantsTouchLocked = true
                 showTouchLock()
                 lockButton?.text = "🔓 باز کردن قفل"
             }
@@ -466,7 +478,6 @@ class MacroAccessibilityService : AccessibilityService() {
         if (!playing || steps.isEmpty()) { executionReport?.visibility = View.GONE; return }
         val current = playIndex + 1
         val total = steps.size
-        val remaining = total - current
         val step = steps.getOrNull(playIndex)
         val stepType = when (step?.kind) { "TAP" -> "کلیک"; "SCROLL" -> "اسکرول"; "BACK" -> "بازگشت"; else -> "نامشخص" }
         executionReport?.text = "دور $loopCount • مرحله $current از $total ($stepType)"
@@ -567,7 +578,7 @@ class MacroAccessibilityService : AccessibilityService() {
 
     private fun showTouchLock() {
         if (touchLockOverlay != null) return
-        isTouchLocked = true
+        isCurrentlyLocked = true
         touchLockOverlay = View(this).apply {
             setBackgroundColor(0x22000000)
             setOnTouchListener { _, _ -> true }
@@ -598,43 +609,22 @@ class MacroAccessibilityService : AccessibilityService() {
     }
 
     private fun hideTouchLock() {
-        isTouchLocked = false
+        isCurrentlyLocked = false
         touchLockOverlay?.let { try { wm.removeView(it) } catch (_: Exception) {} }
         touchLockOverlay = null
     }
 
-    // ✅ نسخه اصلاح‌شده: استفاده از callback برای برگرداندن overlay بعد از اتمام gesture
-    private fun temporarilyHideLockForGesture(action: (onComplete: () -> Unit) -> Unit) {
-        if (!isTouchLocked || touchLockOverlay == null) {
-            action { }
-            return
+    // ✅ غیرفعال کردن موقت قفل هنگام پخش ماکرو
+    private fun temporarilyUnlockForPlayback() {
+        if (isCurrentlyLocked && touchLockOverlay != null) {
+            hideTouchLock()
         }
-        val overlay = touchLockOverlay
-        try { wm.removeView(overlay) } catch (_: Exception) {}
-        
-        action {
-            // برگرداندن overlay فقط بعد از اتمام action
-            handler.postDelayed({
-                if (isTouchLocked && overlay != null && touchLockOverlay === overlay) {
-                    val params = WindowManager.LayoutParams(
-                        WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
-                        WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or 
-                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or 
-                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-                        PixelFormat.TRANSLUCENT
-                    )
-                    try { 
-                        wm.addView(overlay, params)
-                        val currentPanel = panel
-                        val currentParams = panelParams
-                        if (currentPanel != null && currentParams != null) {
-                            wm.removeView(currentPanel)
-                            wm.addView(currentPanel, currentParams)
-                        }
-                    } catch (_: Exception) {}
-                }
-            }, 150L)
+    }
+
+    // ✅ فعال کردن مجدد قفل بعد از اتمام پخش (اگر کاربر خواسته بود)
+    private fun restoreLockAfterPlayback() {
+        if (userWantsTouchLocked && touchLockOverlay == null) {
+            showTouchLock()
         }
     }
 
@@ -683,6 +673,7 @@ class MacroAccessibilityService : AccessibilityService() {
     private fun runNext(session: Int = playbackToken) {
         if (!hasValidLicense()) { 
             stopPlayback()
+            restoreLockAfterPlayback() // ✅ قفل را برگردان
             status?.text = "کد مسدود یا منقضی شده است"
             removePanel()
             return 
@@ -700,7 +691,7 @@ class MacroAccessibilityService : AccessibilityService() {
         val step = steps[playIndex++]
         val delay = (step.delay / playbackSpeed).toLong().coerceIn(15L, 20000L)
         handler.postDelayed({
-            if (!hasValidLicense()) { stopPlayback(); return@postDelayed }
+            if (!hasValidLicense()) { stopPlayback(); restoreLockAfterPlayback(); return@postDelayed }
             if (!playing || session != playbackToken) return@postDelayed
             when (step.kind) {
                 "BACK" -> {
@@ -732,7 +723,6 @@ class MacroAccessibilityService : AccessibilityService() {
         }
     }
 
-    // ✅ اصلاح‌شده: callback onComplete را در gesture callback صدا می‌زنیم
     private fun performTap(step: Step, session: Int) {
         if (!hasValidLicense()) { stopPlayback(); return }
         if (!playing || session != playbackToken) return
@@ -740,18 +730,14 @@ class MacroAccessibilityService : AccessibilityService() {
             val path = Path().apply { moveTo(step.x, step.y) }
             val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 70L)).build()
             
-            temporarilyHideLockForGesture { onComplete ->
-                dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
-                    override fun onCompleted(gestureDescription: GestureDescription?) { 
-                        onComplete() // ✅ overlay را برمی‌گرداند
-                        runNext(session) 
-                    }
-                    override fun onCancelled(gestureDescription: GestureDescription?) {
-                        onComplete() // ✅ overlay را برمی‌گرداند
-                        if (playing && session == playbackToken) handler.postDelayed({ runNext(session) }, 100L)
-                    }
-                }, null)
-            }
+            dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) { 
+                    runNext(session) 
+                }
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    if (playing && session == playbackToken) handler.postDelayed({ runNext(session) }, 100L)
+                }
+            }, null)
         } else {
             val root = rootInActiveWindow
             try { if (!clickNodeAt(root, step.x.toInt(), step.y.toInt())) status?.text = "کلیک در اندروید ۶ قابل اجرا نیست" }
@@ -779,7 +765,6 @@ class MacroAccessibilityService : AccessibilityService() {
         return false
     }
 
-    // ✅ اصلاح‌شده: callback onComplete را در gesture callback صدا می‌زنیم
     private fun performSwipe(step: Step, session: Int) {
         if (!hasValidLicense()) { stopPlayback(); return }
         if (!playing || session != playbackToken) return
@@ -818,18 +803,14 @@ class MacroAccessibilityService : AccessibilityService() {
         val duration = (baseDuration / playbackSpeed).toLong().coerceIn(100L, 3000L)
         val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, duration)).build()
         
-        temporarilyHideLockForGesture { onComplete ->
-            dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
-                override fun onCompleted(gestureDescription: GestureDescription?) {
-                    onComplete() // ✅ overlay را برمی‌گرداند
-                    if (hasValidLicense() && playing && session == playbackToken) handler.postDelayed({ runNext(session) }, 50L)
-                }
-                override fun onCancelled(gestureDescription: GestureDescription?) {
-                    onComplete() // ✅ overlay را برمی‌گرداند
-                    if (playing && session == playbackToken) { status?.text = "اسکرول لغو شد"; handler.postDelayed({ runNext(session) }, 150L) }
-                }
-            }, null)
-        }
+        dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                if (hasValidLicense() && playing && session == playbackToken) handler.postDelayed({ runNext(session) }, 50L)
+            }
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                if (playing && session == playbackToken) { status?.text = "اسکرول لغو شد"; handler.postDelayed({ runNext(session) }, 150L) }
+            }
+        }, null)
     }
 
     private fun performScrollAtPoint(node: AccessibilityNodeInfo?, x: Int, y: Int, forward: Boolean): Boolean {
@@ -923,11 +904,16 @@ class MacroAccessibilityService : AccessibilityService() {
     }
 
     private fun stopPlayback() { 
+        val wasPlaying = playing
         playing = false
         playbackToken++
         playIndex = 0
         loopCount = 0
         executionReport?.visibility = View.GONE
+        // ✅ بعد از توقف پخش، اگر کاربر قبلاً قفل را فعال کرده بود، قفل را برگردان
+        if (wasPlaying) {
+            handler.postDelayed({ restoreLockAfterPlayback() }, 300L)
+        }
     }
 
     private fun stopAll() {
