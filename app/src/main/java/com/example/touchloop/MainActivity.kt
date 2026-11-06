@@ -207,20 +207,22 @@ class MainActivity : Activity() {
                 openAccessibilityService()
             }
             
+            addButton("🔓 رفع محدودیت دسترسی (Allow restricted settings)", color = orange) {
+                openRestrictedSettings()
+            }
+            
             addSpace(8)
             addCard().apply {
                 addText("📋 راهنمای دقیق فعال‌سازی (اندروید ۱۳+)", 16f, cyan, true, true)
-                addText("اگر با زدن دکمه بالا نتوانستید Touch Loop را فعال کنید، این مراحل را دنبال کنید:", 13f, white)
-                addText("", 6f, white)
-                addText("۱. دکمه بالا (⚙️ فعال‌سازی سرویس دسترسی) را بزنید.", 13f, white)
-                addText("۲. وارد «برنامه‌های نصب‌شده» شوید و روی Touch Loop کلیک کنید.", 13f, white)
-                addText("۳. (نکته: در این مرحله فعال نمی‌شود و خطا می‌دهد، این طبیعی است).", 12f, muted)
-                addText("۴. برگردید به صفحه اصلی تنظیمات.", 13f, white)
-                addText("۵. دوباره دکمه «⚙️ فعال‌سازی سرویس دسترسی» را بزنید.", 13f, white)
-                addText("۶. حالا در بالا سمت راست، سه نقطه (⋮) ظاهر می‌شود. روی آن بزنید.", 13f, white)
-                addText("۷. گزینه «Allow restricted settings» را انتخاب و تأیید کنید.", 13f, white)
-                addText("۸. حالا دوباره وارد «برنامه‌های نصب‌شده» شوید.", 13f, white)
-                addText("۹. روی Touch Loop کلیک کنید و این بار می‌توانید آن را فعال کنید. 🎉", 13f, white)
+                addText("۱. روی دکمه «⚙️ فعال‌سازی سرویس دسترسی (Accessibility)» بزنید.", 13f, white)
+                addText("۲. در صفحه‌ای که باز می‌شود، وارد بخش «برنامه‌های نصب‌شده» شوید و روی «Touch Loop automation» کلیک کنید.", 13f, white)
+                addText("(در این مرحله فعال نمی‌شود و خطا می‌دهد؛ این طبیعی است.)", 12f, muted)
+                addText("۳. به برنامه Touch Loop برگردید.", 13f, white)
+                addText("۴. حالا روی دکمه «🔓 رفع محدودیت دسترسی (Allow restricted settings)» بزنید.", 13f, white)
+                addText("۵. در صفحه‌ای که باز می‌شود، روی سه نقطه (⋮) بالای صفحه بزنید و گزینه «Allow restricted settings / اجازه تنظیمات محدود» را انتخاب و تأیید کنید.", 13f, white)
+                addText("۶. دوباره به برنامه برگردید و روی دکمه «⚙️ فعال‌سازی سرویس دسترسی (Accessibility)» بزنید.", 13f, white)
+                addText("۷. دوباره وارد بخش «برنامه‌های نصب‌شده» شوید.", 13f, white)
+                addText("۸. حالا می‌توانید «Touch Loop automation» را روشن کنید و OK را بزنید. 🎉", 13f, white)
             }
             
             addSpace(12)
