@@ -58,11 +58,10 @@ class MacroAccessibilityService : AccessibilityService() {
     private var panelParams: WindowManager.LayoutParams? = null
     private var bubbleParams: WindowManager.LayoutParams? = null
     private var panelCollapsed = false
-    
-    // ✅ متغیرهای جدید برای قفل هوشمند
+
     private var touchLockOverlay: View? = null
-    private var userWantsTouchLocked = false  // آیا کاربر دکمه قفل را زده؟
-    private var isCurrentlyLocked = false      // آیا قفل اکنون فعال است؟
+    private var userWantsTouchLocked = false
+    private var isCurrentlyLocked = false
     private var lockButton: Button? = null
     private var isLicenseBlocked = false
 
@@ -84,10 +83,19 @@ class MacroAccessibilityService : AccessibilityService() {
     private val minPanelWidthDp = 140
     private val minPanelHeightDp = 180
 
+    private val maxStepRetries = 8
+    private var watchdogRunnable: Runnable? = null
+    // ✅ شمارنده نسل: جلوگیری از اجرای مواهی ناشی از callback های دیررس
+    private var currentAttempt = 0L
+
+    private val licenseDateFormatter = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).apply {
+        timeZone = java.util.TimeZone.getTimeZone("UTC")
+    }
+
     private val baseUrl = "https://rkllnarnvbylpphshweu.supabase.co"
     private val checkLicenseEndpoint = "$baseUrl/functions/v1/check-license"
     private val apiKey = "sb_publishable_t8cRQM_w5THIwJvgXrYJNg_Fbxoaz6_"
-    
+
     private var lastOnlineCheck = 0L
     private val checkInterval = 2 * 60 * 1000L
 
@@ -99,10 +107,7 @@ class MacroAccessibilityService : AccessibilityService() {
         if (prefs.getString("license_device_id", "") != currentDevice) return false
         val expiryText = prefs.getString("license_expires_at", null) ?: return false
         return try {
-            val formatter = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).apply {
-                timeZone = java.util.TimeZone.getTimeZone("UTC")
-            }
-            val expiry = formatter.parse(expiryText.take(19)) ?: return false
+            val expiry = licenseDateFormatter.parse(expiryText.take(19)) ?: return false
             val isValid = System.currentTimeMillis() < expiry.time
             if (!isValid) {
                 isLicenseBlocked = true
@@ -112,14 +117,13 @@ class MacroAccessibilityService : AccessibilityService() {
         } catch (_: Exception) { false }
     }
 
-    // ✅ بررسی آنلاین وضعیت لایسنس از سرور
     private fun checkLicenseStatusOnline(force: Boolean = false) {
         val now = System.currentTimeMillis()
         if (!force && (now - lastOnlineCheck) < checkInterval) return
         lastOnlineCheck = now
-        
+
         val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: return
-        
+
         Thread {
             try {
                 val url = java.net.URL(checkLicenseEndpoint)
@@ -130,25 +134,23 @@ class MacroAccessibilityService : AccessibilityService() {
                 connection.doOutput = true
                 connection.setRequestProperty("apikey", apiKey)
                 connection.setRequestProperty("Content-Type", "application/json")
-                
+
                 val body = JSONObject().apply { put("device_id", deviceId) }
                 java.io.OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(body.toString()) }
-                
+
                 val responseCode = connection.responseCode
                 val stream = if (responseCode in 200..299) connection.inputStream else connection.errorStream
                 val responseText = stream?.bufferedReader()?.use { it.readText() } ?: ""
                 val responseJson = JSONObject(responseText)
-                
+
                 if (responseJson.optBoolean("success", false)) {
                     val isValid = responseJson.optBoolean("is_valid", false)
                     val isBlocked = responseJson.optBoolean("is_blocked", false)
                     val isExpired = responseJson.optBoolean("is_expired", false)
-                    
+
                     if (!isValid || isBlocked || isExpired) {
                         isLicenseBlocked = true
-                        val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
-                        prefs.edit().putBoolean("license_active", false).apply()
-                        
+                        getSharedPreferences("touch_loop", MODE_PRIVATE).edit().putBoolean("license_active", false).apply()
                         handler.post {
                             stopAll()
                             removePanel()
@@ -156,21 +158,15 @@ class MacroAccessibilityService : AccessibilityService() {
                         }
                     }
                 }
-                
                 connection.disconnect()
-            } catch (e: Exception) {
-                // خطای شبکه را نادیده بگیر
-            }
+            } catch (e: Exception) { }
         }.start()
     }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
-        
-        // ✅ بررسی آنلاین فوری هنگام اتصال Accessibility
         checkLicenseStatusOnline(force = true)
-        
         if (!hasValidLicense()) { stopAll(); return }
         loadMacro()
         val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
@@ -304,7 +300,7 @@ class MacroAccessibilityService : AccessibilityService() {
             setPadding(scaledDp(4), scaledDp(2), scaledDp(4), scaledDp(2))
             isAllCaps = false
             setOnClickListener {
-                if (!hasValidLicense()) { 
+                if (!hasValidLicense()) {
                     recording = false
                     stopPlayback()
                     status?.text = "کد شما مسدود یا منقضی شده است"
@@ -373,18 +369,19 @@ class MacroAccessibilityService : AccessibilityService() {
             if (recording) { handler.removeCallbacks(flushScrollRunnable); flushPendingScroll() }
             recording = false; stopPlayback(); saveMacro()
             if (steps.isEmpty()) { status?.text = "ابتدا ماکرو ضبط کن" }
-            else { 
+            else {
                 playbackToken++; loopCount = 1; playing = true; playIndex = 0
                 status?.text = "در حال پخش…"
                 updateExecutionReport()
                 executionReport?.visibility = View.VISIBLE
-                // ✅ غیرفعال کردن موقت قفل هنگام شروع پخش برای جلوگیری از تداخل
                 temporarilyUnlockForPlayback()
-                runNext(playbackToken) 
+                runNext(playbackToken)
             }
         })
         contentContainer.addView(button("✎ ویرایش") {
             if (!hasValidLicense()) return@button
+            // ✅ جلوگیری از تغییر مراحل حین پخش
+            if (playing) { status?.text = "ابتدا پخش را متوقف کن"; return@button }
             if (steps.isEmpty()) status?.text = "ماکرویی برای ویرایش نیست" else showMacroEditor()
         })
 
@@ -483,6 +480,255 @@ class MacroAccessibilityService : AccessibilityService() {
         executionReport?.text = "دور $loopCount • مرحله $current از $total ($stepType)"
     }
 
+    // =====================================================================
+    // موتور پخش ضدباگ: تک‌زنجیره + تلاش مجدد + واچ‌داگ + شمارنده نسل
+    // =====================================================================
+
+    private fun runNext(session: Int) {
+        runStep(playIndex, session, 0)
+    }
+
+    private fun runStep(index: Int, session: Int, retry: Int) {
+        if (!hasValidLicense()) {
+            stopPlayback()
+            restoreLockAfterPlayback()
+            status?.text = "کد مسدود یا منقضی شده است"
+            removePanel()
+            return
+        }
+        if (!playing || session != playbackToken || steps.isEmpty()) return
+
+        if (index >= steps.size) {
+            loopCount++
+            playIndex = 0
+            val gap = (100L / playbackSpeed).toLong().coerceIn(20L, 100L)
+            handler.postDelayed({
+                if (hasValidLicense() && playing && session == playbackToken) runStep(0, session, 0)
+            }, gap)
+            return
+        }
+
+        playIndex = index
+        updateExecutionReport()
+        val step = steps[index]
+        val delay = (step.delay / playbackSpeed).toLong().coerceIn(15L, 20000L)
+        handler.postDelayed({
+            if (!hasValidLicense()) { stopPlayback(); return@postDelayed }
+            if (!playing || session != playbackToken) return@postDelayed
+            when (step.kind) {
+                "BACK" -> {
+                    performGlobalAction(GLOBAL_ACTION_BACK)
+                    val backDelay = (400L / playbackSpeed).toLong().coerceIn(50L, 500L)
+                    handler.postDelayed({
+                        if (playing && session == playbackToken) runStep(index + 1, session, 0)
+                    }, backDelay)
+                }
+                "SCROLL", "TAP" -> dispatchStep(step, index, session, retry)
+                else -> runStep(index + 1, session, 0)
+            }
+        }, delay)
+    }
+
+    private fun dispatchStep(step: Step, index: Int, session: Int, retry: Int) {
+        if (!hasValidLicense()) { stopPlayback(); return }
+        if (!playing || session != playbackToken) return
+
+        if (Build.VERSION.SDK_INT < 24) {
+            if (step.kind == "SCROLL") {
+                val root = rootInActiveWindow
+                val forward = step.scrollDeltaY >= 0
+                val scrolled = try { performScrollAtPoint(root, step.x.toInt(), step.y.toInt(), forward) || performScrollOnNode(root, forward) } finally { root?.recycle() }
+                if (!scrolled) status?.text = "این صفحه اسکرول قابل‌دسترسی ندارد"
+                val baseDuration = if (step.duration > 0) step.duration else (step.delay * 0.8f).toLong().coerceIn(200L, 1500L)
+                val duration = (baseDuration / playbackSpeed).toLong().coerceIn(150L, 3000L)
+                handler.postDelayed({ if (playing && session == playbackToken) runStep(index + 1, session, 0) }, duration)
+                return
+            } else {
+                val root = rootInActiveWindow
+                try { clickNodeAt(root, step.x.toInt(), step.y.toInt()) } finally { root?.recycle() }
+                handler.postDelayed({ if (playing && session == playbackToken) runStep(index + 1, session, 0) }, 150L)
+                return
+            }
+        }
+
+        val screenWidth = resources.displayMetrics.widthPixels
+        val screenHeight = resources.displayMetrics.heightPixels
+        if (screenWidth < 4 || screenHeight < 4) {
+            handler.postDelayed({ if (playing && session == playbackToken) runStep(index + 1, session, 0) }, 200L)
+            return
+        }
+
+        val path = Path()
+        var gestureDuration = 70L
+
+        if (step.kind == "TAP") {
+            path.moveTo(step.x, step.y)
+            gestureDuration = 70L
+        } else {
+            val left = step.left.coerceIn(0, screenWidth - 2)
+            val right = step.right.coerceIn(left + 2, screenWidth)
+            val top = step.top.coerceIn(0, screenHeight - 2)
+            val bottom = step.bottom.coerceIn(top + 2, screenHeight)
+            val minY = top + 2f; val maxY = bottom - 2f
+            val height = (bottom - top).toFloat().coerceAtLeast(4f)
+            val x = step.x.coerceIn(left.toFloat() + 2f, right.toFloat() - 2f)
+            val estimated = if (step.scrollDeltaY != 0) abs(step.scrollDeltaY.toFloat()) else height * 0.78f
+            val distance = min(height * 0.90f, max(height * 0.45f, estimated * 0.65f))
+            val centerY = step.y.coerceIn(minY, maxY)
+            val direction = if (step.scrollDeltaY < 0) 1f else -1f
+            var startY = (centerY - direction * distance / 2f).coerceIn(minY, maxY)
+            var endY = (centerY + direction * distance / 2f).coerceIn(minY, maxY)
+            if (abs(startY - endY) < 2f) {
+                startY = if (centerY > (minY + maxY) / 2f) maxY else minY
+                endY = if (startY == minY) maxY else minY
+            }
+            path.moveTo(x, startY)
+            path.lineTo(x, endY)
+            val baseDuration = if (step.duration > 0) step.duration else (step.delay * 0.8f).toLong().coerceIn(200L, 1500L)
+            gestureDuration = (baseDuration / playbackSpeed).toLong().coerceIn(100L, 3000L)
+        }
+
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, gestureDuration))
+            .build()
+
+        // ✅ نسل جدید ثبت می‌شود؛ callback های قدیمی بی‌اثر می‌شوند
+        currentAttempt++
+        val attempt = currentAttempt
+
+        armWatchdog(step, index, session, retry, attempt, gestureDuration + 5000L)
+
+        val accepted = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                if (attempt != currentAttempt) return // ✅ callback دیررس نادیده گرفته می‌شود
+                disarmWatchdog()
+                if (!playing || session != playbackToken) return
+                handler.postDelayed({
+                    if (playing && session == playbackToken) runStep(index + 1, session, 0)
+                }, 30L)
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                if (attempt != currentAttempt) return // ✅ callback دیررس نادیده گرفته می‌شود
+                disarmWatchdog()
+                if (!playing || session != playbackToken) return
+                if (retry < maxStepRetries) {
+                    handler.postDelayed({
+                        if (playing && session == playbackToken) dispatchStep(step, index, session, retry + 1)
+                    }, 400L)
+                } else {
+                    handler.postDelayed({
+                        if (playing && session == playbackToken) runStep(index + 1, session, 0)
+                    }, 100L)
+                }
+            }
+        }, null)
+
+        if (!accepted) {
+            if (attempt == currentAttempt) {
+                disarmWatchdog()
+                if (retry < maxStepRetries) {
+                    handler.postDelayed({
+                        if (playing && session == playbackToken) dispatchStep(step, index, session, retry + 1)
+                    }, 300L)
+                } else {
+                    handler.postDelayed({
+                        if (playing && session == playbackToken) runStep(index + 1, session, 0)
+                    }, 100L)
+                }
+            }
+        }
+    }
+
+    private fun armWatchdog(step: Step, index: Int, session: Int, retry: Int, attempt: Long, timeout: Long) {
+        disarmWatchdog()
+        val r = Runnable {
+            if (!playing || session != playbackToken) return@Runnable
+            if (attempt != currentAttempt) return@Runnable
+            if (retry < maxStepRetries) {
+                dispatchStep(step, index, session, retry + 1)
+            } else {
+                currentAttempt++ // ✅ باطل‌کردن callback های این تلاش
+                runStep(index + 1, session, 0)
+            }
+        }
+        watchdogRunnable = r
+        handler.postDelayed(r, timeout)
+    }
+
+    private fun disarmWatchdog() {
+        watchdogRunnable?.let { handler.removeCallbacks(it) }
+        watchdogRunnable = null
+    }
+
+    // =====================================================================
+
+    private fun dispatchTap(x: Float, y: Float, onDone: (() -> Unit)? = null) {
+        if (!hasValidLicense()) return
+        if (Build.VERSION.SDK_INT >= 24) {
+            val path = Path().apply { moveTo(x, y) }
+            val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 70L)).build()
+            dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) { onDone?.invoke() }
+                override fun onCancelled(gestureDescription: GestureDescription?) { onDone?.invoke() }
+            }, null)
+        } else {
+            val root = rootInActiveWindow
+            try { if (!clickNodeAt(root, x.toInt(), y.toInt())) status?.text = "این کلیک در اندروید ۶ قابل اجرا نیست" }
+            finally { root?.recycle() }
+            onDone?.invoke()
+        }
+    }
+
+    private fun clickNodeAt(node: AccessibilityNodeInfo?, x: Int, y: Int): Boolean {
+        if (!hasValidLicense() || node == null) return false
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        if (!bounds.contains(x, y)) return false
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val clicked = try { clickNodeAt(child, x, y) } finally { child.recycle() }
+            if (clicked) return true
+        }
+        var current: AccessibilityNodeInfo? = AccessibilityNodeInfo.obtain(node)
+        while (current != null) {
+            if (!hasValidLicense()) { current.recycle(); return false }
+            if (current.isClickable && current.performAction(AccessibilityNodeInfo.ACTION_CLICK)) { current.recycle(); return true }
+            val parent = current.parent; current.recycle(); current = parent
+        }
+        return false
+    }
+
+    private fun performScrollAtPoint(node: AccessibilityNodeInfo?, x: Int, y: Int, forward: Boolean): Boolean {
+        if (!hasValidLicense() || node == null) return false
+        val bounds = Rect(); node.getBoundsInScreen(bounds)
+        if (!bounds.contains(x, y)) return false
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val scrolled = try { performScrollAtPoint(child, x, y, forward) } finally { child.recycle() }
+            if (scrolled) return true
+        }
+        if (node.isScrollable) {
+            val action = if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+            if (node.performAction(action)) return true
+        }
+        return false
+    }
+
+    private fun performScrollOnNode(node: AccessibilityNodeInfo?, forward: Boolean): Boolean {
+        if (!hasValidLicense() || node == null) return false
+        if (node.isScrollable) {
+            val action = if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+            if (node.performAction(action)) return true
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val scrolled = try { performScrollOnNode(child, forward) } finally { child.recycle() }
+            if (scrolled) return true
+        }
+        return false
+    }
+
     private fun showMacroEditor() {
         val dialog = AlertDialog.Builder(this).create()
         dialog.window?.setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
@@ -504,7 +750,7 @@ class MacroAccessibilityService : AccessibilityService() {
             stepView.addView(stepText)
 
             val actionsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-            
+
             if (index > 0) {
                 actionsRow.addView(Button(this).apply {
                     text = "↑"; textSize = 12f; setPadding(dp(6), dp(2), dp(6), dp(2)); minWidth = 0; minHeight = 0
@@ -521,7 +767,7 @@ class MacroAccessibilityService : AccessibilityService() {
                 text = "🗑️"; textSize = 12f; setPadding(dp(6), dp(2), dp(6), dp(2)); minWidth = 0; minHeight = 0
                 setOnClickListener { steps.removeAt(index); saveMacro(); dialog.dismiss(); showMacroEditor() }
             })
-            
+
             stepView.addView(actionsRow)
             container.addView(stepView)
         }
@@ -544,9 +790,9 @@ class MacroAccessibilityService : AccessibilityService() {
         val dialog = AlertDialog.Builder(this).create()
         dialog.window?.setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(20), dp(20), dp(20)); setBackgroundColor(0xFF1A1D24.toInt()) }
-        
+
         layout.addView(TextView(this).apply { text = "نوع مرحله را انتخاب کنید:"; textSize = 16f; setTextColor(0xFFFFFFFF.toInt()); gravity = Gravity.CENTER; setPadding(0, 0, 0, dp(16)) })
-        
+
         listOf("کلیک (مرکز صفحه)", "اسکرول به پایین", "دکمه بازگشت").forEach { type ->
             layout.addView(Button(this).apply {
                 text = type; textSize = 14f; setPadding(dp(16), dp(12), dp(16), dp(12))
@@ -586,12 +832,12 @@ class MacroAccessibilityService : AccessibilityService() {
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or 
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or 
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT
         )
-        try { 
+        try {
             wm.addView(touchLockOverlay, params)
             val currentPanel = panel
             val currentParams = panelParams
@@ -614,14 +860,12 @@ class MacroAccessibilityService : AccessibilityService() {
         touchLockOverlay = null
     }
 
-    // ✅ غیرفعال کردن موقت قفل هنگام پخش ماکرو
     private fun temporarilyUnlockForPlayback() {
         if (isCurrentlyLocked && touchLockOverlay != null) {
             hideTouchLock()
         }
     }
 
-    // ✅ فعال کردن مجدد قفل بعد از اتمام پخش (اگر کاربر خواسته بود)
     private fun restoreLockAfterPlayback() {
         if (userWantsTouchLocked && touchLockOverlay == null) {
             showTouchLock()
@@ -668,179 +912,6 @@ class MacroAccessibilityService : AccessibilityService() {
     private fun removePointPicker() {
         pointPicker?.let { try { wm.removeView(it) } catch (_: Exception) {} }
         pointPicker = null
-    }
-
-    private fun runNext(session: Int = playbackToken) {
-        if (!hasValidLicense()) { 
-            stopPlayback()
-            restoreLockAfterPlayback() // ✅ قفل را برگردان
-            status?.text = "کد مسدود یا منقضی شده است"
-            removePanel()
-            return 
-        }
-        if (!playing || session != playbackToken || steps.isEmpty()) return
-        
-        if (playIndex >= steps.size) {
-            loopCount++
-            playIndex = 0
-            val gap = (100L / playbackSpeed).toLong().coerceIn(20L, 100L)
-            handler.postDelayed({ if (hasValidLicense() && playing && session == playbackToken) runNext(session) }, gap)
-            return
-        }
-        updateExecutionReport()
-        val step = steps[playIndex++]
-        val delay = (step.delay / playbackSpeed).toLong().coerceIn(15L, 20000L)
-        handler.postDelayed({
-            if (!hasValidLicense()) { stopPlayback(); restoreLockAfterPlayback(); return@postDelayed }
-            if (!playing || session != playbackToken) return@postDelayed
-            when (step.kind) {
-                "BACK" -> {
-                    performGlobalAction(GLOBAL_ACTION_BACK)
-                    val backDelay = (400L / playbackSpeed).toLong().coerceIn(50L, 500L)
-                    handler.postDelayed({ if (playing && session == playbackToken) runNext(session) }, backDelay)
-                }
-                "SCROLL" -> performSwipe(step, session)
-                "TAP" -> performTap(step, session)
-                else -> runNext(session)
-            }
-        }, delay)
-    }
-
-    private fun dispatchTap(x: Float, y: Float, onDone: (() -> Unit)? = null) {
-        if (!hasValidLicense()) return
-        if (Build.VERSION.SDK_INT >= 24) {
-            val path = Path().apply { moveTo(x, y) }
-            val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 70L)).build()
-            dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
-                override fun onCompleted(gestureDescription: GestureDescription?) { onDone?.invoke() }
-                override fun onCancelled(gestureDescription: GestureDescription?) { onDone?.invoke() }
-            }, null)
-        } else {
-            val root = rootInActiveWindow
-            try { if (!clickNodeAt(root, x.toInt(), y.toInt())) status?.text = "این کلیک در اندروید ۶ قابل اجرا نیست" }
-            finally { root?.recycle() }
-            onDone?.invoke()
-        }
-    }
-
-    private fun performTap(step: Step, session: Int) {
-        if (!hasValidLicense()) { stopPlayback(); return }
-        if (!playing || session != playbackToken) return
-        if (Build.VERSION.SDK_INT >= 24) {
-            val path = Path().apply { moveTo(step.x, step.y) }
-            val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 70L)).build()
-            
-            dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
-                override fun onCompleted(gestureDescription: GestureDescription?) { 
-                    runNext(session) 
-                }
-                override fun onCancelled(gestureDescription: GestureDescription?) {
-                    if (playing && session == playbackToken) handler.postDelayed({ runNext(session) }, 100L)
-                }
-            }, null)
-        } else {
-            val root = rootInActiveWindow
-            try { if (!clickNodeAt(root, step.x.toInt(), step.y.toInt())) status?.text = "کلیک در اندروید ۶ قابل اجرا نیست" }
-            finally { root?.recycle() }
-            handler.postDelayed({ runNext(session) }, 150L)
-        }
-    }
-
-    private fun clickNodeAt(node: AccessibilityNodeInfo?, x: Int, y: Int): Boolean {
-        if (!hasValidLicense() || node == null) return false
-        val bounds = Rect()
-        node.getBoundsInScreen(bounds)
-        if (!bounds.contains(x, y)) return false
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val clicked = try { clickNodeAt(child, x, y) } finally { child.recycle() }
-            if (clicked) return true
-        }
-        var current: AccessibilityNodeInfo? = AccessibilityNodeInfo.obtain(node)
-        while (current != null) {
-            if (!hasValidLicense()) { current.recycle(); return false }
-            if (current.isClickable && current.performAction(AccessibilityNodeInfo.ACTION_CLICK)) { current.recycle(); return true }
-            val parent = current.parent; current.recycle(); current = parent
-        }
-        return false
-    }
-
-    private fun performSwipe(step: Step, session: Int) {
-        if (!hasValidLicense()) { stopPlayback(); return }
-        if (!playing || session != playbackToken) return
-        if (Build.VERSION.SDK_INT < 24) {
-            val root = rootInActiveWindow
-            val forward = step.scrollDeltaY >= 0
-            val scrolled = try { performScrollAtPoint(root, step.x.toInt(), step.y.toInt(), forward) || performScrollOnNode(root, forward) } finally { root?.recycle() }
-            if (!scrolled) status?.text = "این صفحه اسکرول قابل‌دسترسی ندارد"
-            val baseDuration = if (step.duration > 0) step.duration else (step.delay * 0.8f).toLong().coerceIn(200L, 1500L)
-            val duration = (baseDuration / playbackSpeed).toLong().coerceIn(150L, 3000L)
-            handler.postDelayed({ if (playing && session == playbackToken) runNext(session) }, duration)
-            return
-        }
-        val screenWidth = resources.displayMetrics.widthPixels
-        val screenHeight = resources.displayMetrics.heightPixels
-        if (screenWidth < 4 || screenHeight < 4) { handler.postDelayed({ runNext(session) }, 200L); return }
-        val left = step.left.coerceIn(0, screenWidth - 2)
-        val right = step.right.coerceIn(left + 2, screenWidth)
-        val top = step.top.coerceIn(0, screenHeight - 2)
-        val bottom = step.bottom.coerceIn(top + 2, screenHeight)
-        val minY = top + 2f; val maxY = bottom - 2f
-        val height = (bottom - top).toFloat().coerceAtLeast(4f)
-        val x = step.x.coerceIn(left.toFloat() + 2f, right.toFloat() - 2f)
-        val estimated = if (step.scrollDeltaY != 0) abs(step.scrollDeltaY.toFloat()) else height * 0.78f
-        val distance = min(height * 0.90f, max(height * 0.45f, estimated * 0.65f))
-        val centerY = step.y.coerceIn(minY, maxY)
-        val direction = if (step.scrollDeltaY < 0) 1f else -1f
-        var startY = (centerY - direction * distance / 2f).coerceIn(minY, maxY)
-        var endY = (centerY + direction * distance / 2f).coerceIn(minY, maxY)
-        if (abs(startY - endY) < 2f) {
-            startY = if (centerY > (minY + maxY) / 2f) maxY else minY
-            endY = if (startY == minY) maxY else minY
-        }
-        val path = Path().apply { moveTo(x, startY); lineTo(x, endY) }
-        val baseDuration = if (step.duration > 0) step.duration else (step.delay * 0.8f).toLong().coerceIn(200L, 1500L)
-        val duration = (baseDuration / playbackSpeed).toLong().coerceIn(100L, 3000L)
-        val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, duration)).build()
-        
-        dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
-            override fun onCompleted(gestureDescription: GestureDescription?) {
-                if (hasValidLicense() && playing && session == playbackToken) handler.postDelayed({ runNext(session) }, 50L)
-            }
-            override fun onCancelled(gestureDescription: GestureDescription?) {
-                if (playing && session == playbackToken) { status?.text = "اسکرول لغو شد"; handler.postDelayed({ runNext(session) }, 150L) }
-            }
-        }, null)
-    }
-
-    private fun performScrollAtPoint(node: AccessibilityNodeInfo?, x: Int, y: Int, forward: Boolean): Boolean {
-        if (!hasValidLicense() || node == null) return false
-        val bounds = Rect(); node.getBoundsInScreen(bounds)
-        if (!bounds.contains(x, y)) return false
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val scrolled = try { performScrollAtPoint(child, x, y, forward) } finally { child.recycle() }
-            if (scrolled) return true
-        }
-        if (node.isScrollable) {
-            val action = if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
-            if (node.performAction(action)) return true
-        }
-        return false
-    }
-
-    private fun performScrollOnNode(node: AccessibilityNodeInfo?, forward: Boolean): Boolean {
-        if (!hasValidLicense() || node == null) return false
-        if (node.isScrollable) {
-            val action = if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
-            if (node.performAction(action)) return true
-        }
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val scrolled = try { performScrollOnNode(child, forward) } finally { child.recycle() }
-            if (scrolled) return true
-        }
-        return false
     }
 
     private fun formatSpeed(value: Float): String = String.format(java.util.Locale.US, "%.2f", value).trimEnd('0').trimEnd('.')
@@ -903,14 +974,15 @@ class MacroAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun stopPlayback() { 
+    private fun stopPlayback() {
         val wasPlaying = playing
         playing = false
         playbackToken++
+        currentAttempt++ // ✅ باطل‌کردن تمام callback های در حال پرواز
         playIndex = 0
         loopCount = 0
         executionReport?.visibility = View.GONE
-        // ✅ بعد از توقف پخش، اگر کاربر قبلاً قفل را فعال کرده بود، قفل را برگردان
+        disarmWatchdog()
         if (wasPlaying) {
             handler.postDelayed({ restoreLockAfterPlayback() }, 300L)
         }
