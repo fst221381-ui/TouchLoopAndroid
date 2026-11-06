@@ -1,6 +1,7 @@
 package com.example.touchloop
 
 import android.app.Activity
+import android.app.AlertDialog // ✅ اضافه شد
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -8,12 +9,14 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager // ✅ اضافه شد
 import android.widget.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -155,10 +158,27 @@ class MainActivity : Activity() {
         } catch (_: Exception) { isoDate }
     }
 
+    private fun openRestrictedSettings() {
+        try {
+            val intent = Intent("android.settings.MANAGE_APP_RESTRICTED_SETTINGS").apply {
+                data = Uri.parse("package:$packageName")
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            try {
+                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+                startActivity(intent)
+            } catch (e2: Exception) {
+                Toast.makeText(this, "لطفاً به تنظیمات برنامه بروید", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     private fun openAccessibilityService() {
         try {
-            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-            startActivity(intent)
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         } catch (e: Exception) {
             Toast.makeText(this, "خطا در باز کردن تنظیمات", Toast.LENGTH_SHORT).show()
         }
@@ -179,26 +199,27 @@ class MainActivity : Activity() {
             }
             addSpace(12)
             
-            // ✅ مدیریت ماکروهای ذخیره‌شده
             addButton("📂 مدیریت ماکروهای ذخیره‌شده") {
                 showMacrosManager()
             }
             
-            // ✅ فعال‌سازی سرویس دسترسی
-            addButton("⚙️ فعال‌سازی سرویس دسترسی (Accessibility)") {
+            addButton("🔓 رفع محدودیت دسترسی (مخصوص اندروید ۱۳+)", color = orange) {
+                openRestrictedSettings()
+            }
+
+            addButton("⚙️ فعال‌سازی سرویس دسترسی") {
                 openAccessibilityService()
             }
             
             addSpace(8)
             addCard().apply {
-                addText("📋 راهنمای فعال‌سازی پنل شناور:", 16f, cyan, true, true)
-                addText("۱. دکمه بالا را بزنید تا وارد تنظیمات دسترسی شوید.", 13f, white)
-                addText("۲. در لیست، «Touch Loop automation» را پیدا کنید.", 13f, white)
-                addText("۳. آن را روشن کنید و در پیام هشدار، OK را بزنید.", 13f, white)
-                addText("۴. پنل شناور روی صفحه ظاهر می‌شود! 🎉", 13f, white)
-                addText("", 8f, white)
-                addText("💡 نکته: برای ضبط ماکرو، از پنل شناور استفاده کنید.", 12f, muted)
-                addText("برای اجرای ماکروهای ذخیره‌شده، از بخش مدیریت ماکروها استفاده کنید.", 12f, muted)
+                addText("📋 راهنمای دقیق فعال‌سازی:", 16f, cyan, true, true)
+                addText("۱. ابتدا دکمه «🔓 رفع محدودیت» را بزنید.", 13f, white)
+                addText("۲. در صفحه باز شده، روی سه نقطه (⋮) بالا بزنید و «Allow restricted settings» را انتخاب و تأیید کنید.", 13f, white)
+                addText("۳. اگر سه نقطه را ندیدید: ابتدا وارد لیست دسترسی‌ها شوید، روی Touch Loop بزنید (فعال نکنید)، برگردید و دوباره امتحان کنید.", 13f, white)
+                addText("۴. حالا دکمه «⚙️ فعال‌سازی سرویس» را بزنید.", 13f, white)
+                addText("۵. «Touch Loop automation» را پیدا کرده، روشن کنید و OK را بزنید.", 13f, white)
+                addText("۶. پنل شناور ظاهر می‌شود! 🎉", 13f, white)
             }
             
             addSpace(12)
@@ -216,7 +237,6 @@ class MainActivity : Activity() {
         addText("برای فعال‌سازی برنامه، ورود کاربر و کد فعال‌سازی لازم است.", 13f, muted, false, true)
     }
 
-    // ✅ مدیریت ماکروهای ذخیره‌شده
     private fun showMacrosManager() {
         val dialog = AlertDialog.Builder(this).create()
         dialog.window?.setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
@@ -299,7 +319,6 @@ class MainActivity : Activity() {
             }
         }
         
-        // دکمه ذخیره ماکروی فعلی با نام جدید
         container.addView(Button(this).apply {
             text = "💾 ذخیره ماکروی فعلی با نام جدید"
             textSize = 14f
@@ -322,7 +341,6 @@ class MainActivity : Activity() {
         dialog.show()
     }
 
-    // ✅ Dialog برای ذخیره ماکرو با نام
     private fun showSaveMacroDialog() {
         val input = EditText(this).apply {
             hint = "نام ماکرو را وارد کنید (مثلاً: اینستاگرام)"
@@ -346,23 +364,19 @@ class MainActivity : Activity() {
             .show()
     }
 
-    // ✅ اجرای ماکرو
     private fun runMacro(name: String) {
         prefs.edit()
             .putString("pending_macro_name", name)
             .putBoolean("run_pending_macro", true)
             .apply()
-        // Service در onServiceConnected یا دوره‌ای این را چک می‌کند
         Toast.makeText(this, "ماکرو '$name' برای اجرا ارسال شد", Toast.LENGTH_SHORT).show()
     }
 
-    // ✅ حذف ماکرو
     private fun deleteMacro(name: String) {
         deleteSavedMacro(name)
         Toast.makeText(this, "ماکرو '$name' حذف شد", Toast.LENGTH_SHORT).show()
     }
 
-    // ✅ توابع کمکی برای مدیریت ماکروها (خواندن از SharedPreferences)
     private fun getSavedMacros(): List<String> {
         val savedMacrosJson = prefs.getString("saved_macros", "[]") ?: "[]"
         val savedMacros = JSONArray(savedMacrosJson)
@@ -375,9 +389,6 @@ class MainActivity : Activity() {
     }
 
     private fun saveMacroWithName(name: String) {
-        // این تابع باید از Service صدا زده شود، اما برای سادگی اینجا هم پیاده‌سازی می‌کنیم
-        // در واقع، کاربر باید از پنل شناور ماکرو را ضبط کند و سپس از اینجا ذخیره کند
-        // برای این کار، ماکروی current_macro را می‌خوانیم و با نام ذخیره می‌کنیم
         val currentMacroJson = prefs.getString("current_macro", null) ?: return
         val savedMacrosJson = prefs.getString("saved_macros", "[]") ?: "[]"
         val savedMacros = JSONArray(savedMacrosJson)
@@ -415,9 +426,7 @@ class MainActivity : Activity() {
                 if (announcement != null) {
                     val message = announcement.optString("message", "")
                     if (message.isNotBlank()) {
-                        runOnUiThread {
-                            showAnnouncementDialog(message)
-                        }
+                        runOnUiThread { showAnnouncementDialog(message) }
                     }
                 }
             }
@@ -425,7 +434,7 @@ class MainActivity : Activity() {
     }
 
     private fun showAnnouncementDialog(message: String) {
-        android.app.AlertDialog.Builder(this)
+        AlertDialog.Builder(this)
             .setTitle("📢 پیام مدیر")
             .setMessage(message)
             .setPositiveButton("بستن") { d, _ -> d.dismiss() }
@@ -529,7 +538,7 @@ class MainActivity : Activity() {
             hint = "پیام خود را بنویسید..."
             setPadding(dp(16), dp(16), dp(16), dp(16))
         }
-        android.app.AlertDialog.Builder(this)
+        AlertDialog.Builder(this)
             .setTitle("پیام عمومی جدید")
             .setView(input)
             .setPositiveButton("ارسال") { _, _ ->
