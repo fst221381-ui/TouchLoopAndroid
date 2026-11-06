@@ -1,7 +1,7 @@
 package com.example.touchloop
 
 import android.app.Activity
-import android.app.AlertDialog // ✅ اضافه شد
+import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -16,7 +16,7 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.view.WindowManager // ✅ اضافه شد
+import android.view.WindowManager
 import android.widget.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -203,23 +203,24 @@ class MainActivity : Activity() {
                 showMacrosManager()
             }
             
-            addButton("🔓 رفع محدودیت دسترسی (مخصوص اندروید ۱۳+)", color = orange) {
-                openRestrictedSettings()
-            }
-
-            addButton("⚙️ فعال‌سازی سرویس دسترسی") {
+            addButton("⚙️ فعال‌سازی سرویس دسترسی (Accessibility)", color = cyan) {
                 openAccessibilityService()
             }
             
             addSpace(8)
             addCard().apply {
-                addText("📋 راهنمای دقیق فعال‌سازی:", 16f, cyan, true, true)
-                addText("۱. ابتدا دکمه «🔓 رفع محدودیت» را بزنید.", 13f, white)
-                addText("۲. در صفحه باز شده، روی سه نقطه (⋮) بالا بزنید و «Allow restricted settings» را انتخاب و تأیید کنید.", 13f, white)
-                addText("۳. اگر سه نقطه را ندیدید: ابتدا وارد لیست دسترسی‌ها شوید، روی Touch Loop بزنید (فعال نکنید)، برگردید و دوباره امتحان کنید.", 13f, white)
-                addText("۴. حالا دکمه «⚙️ فعال‌سازی سرویس» را بزنید.", 13f, white)
-                addText("۵. «Touch Loop automation» را پیدا کرده، روشن کنید و OK را بزنید.", 13f, white)
-                addText("۶. پنل شناور ظاهر می‌شود! 🎉", 13f, white)
+                addText("📋 راهنمای دقیق فعال‌سازی (اندروید ۱۳+)", 16f, cyan, true, true)
+                addText("اگر با زدن دکمه بالا نتوانستید Touch Loop را فعال کنید، این مراحل را دنبال کنید:", 13f, white)
+                addText("", 6f, white)
+                addText("۱. دکمه بالا (⚙️ فعال‌سازی سرویس دسترسی) را بزنید.", 13f, white)
+                addText("۲. وارد «برنامه‌های نصب‌شده» شوید و روی Touch Loop کلیک کنید.", 13f, white)
+                addText("۳. (نکته: در این مرحله فعال نمی‌شود و خطا می‌دهد، این طبیعی است).", 12f, muted)
+                addText("۴. برگردید به صفحه اصلی تنظیمات.", 13f, white)
+                addText("۵. دوباره دکمه «⚙️ فعال‌سازی سرویس دسترسی» را بزنید.", 13f, white)
+                addText("۶. حالا در بالا سمت راست، سه نقطه (⋮) ظاهر می‌شود. روی آن بزنید.", 13f, white)
+                addText("۷. گزینه «Allow restricted settings» را انتخاب و تأیید کنید.", 13f, white)
+                addText("۸. حالا دوباره وارد «برنامه‌های نصب‌شده» شوید.", 13f, white)
+                addText("۹. روی Touch Loop کلیک کنید و این بار می‌توانید آن را فعال کنید. 🎉", 13f, white)
             }
             
             addSpace(12)
@@ -389,7 +390,7 @@ class MainActivity : Activity() {
     }
 
     private fun saveMacroWithName(name: String) {
-        val currentMacroJson = prefs.getString("current_macro", null) ?: return
+        val currentMacroJson = prefs.getString("current_macro", null) ?: prefs.getString("macro", null) ?: return
         val savedMacrosJson = prefs.getString("saved_macros", "[]") ?: "[]"
         val savedMacros = JSONArray(savedMacrosJson)
         
