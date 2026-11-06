@@ -20,7 +20,6 @@ import org.json.JSONObject
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.Calendar
 
 class MainActivity : Activity() {
 
@@ -68,10 +67,7 @@ class MainActivity : Activity() {
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
-
-    private fun addSpace(height: Int = 10) {
-        root.addView(View(this), LinearLayout.LayoutParams(1, dp(height)))
-    }
+    private fun addSpace(height: Int = 10) { root.addView(View(this), LinearLayout.LayoutParams(1, dp(height))) }
 
     private fun addText(text: String, size: Float = 16f, color: Int = white, bold: Boolean = false, centered: Boolean = false): TextView {
         return TextView(this).apply {
@@ -139,10 +135,7 @@ class MainActivity : Activity() {
         days %= 12053
         jy += 4 * (days / 1461)
         days %= 1461
-        if (days > 365) {
-            jy += (days - 1) / 365
-            days = (days - 1) % 365
-        }
+        if (days > 365) { jy += (days - 1) / 365; days = (days - 1) % 365 }
         val jm: Int; val jd: Int
         if (days < 186) { jm = 1 + (days / 31); jd = 1 + (days % 31) } 
         else { jm = 7 + ((days - 186) / 30); jd = 1 + ((days - 186) % 30) }
@@ -163,16 +156,32 @@ class MainActivity : Activity() {
     }
 
     private fun showHome() {
-        adminToken = null
+        adminToken = null // فقط توکن ادمین ریست می‌شود، نه لایسنس کاربر
         newRoot()
         addHeader()
-        addCard().apply {
-            addText("خوش آمدی", 21f, white, true, true)
-            addText("برای ادامه، نوع ورود را انتخاب کن.", 15f, muted, false, true)
+        
+        // ✅ بررسی خودکار لایسنس فعال
+        if (prefs.getBoolean("license_active", false)) {
+            val expiry = prefs.getString("license_expires_at", "—") ?: "—"
+            addCard().apply {
+                addText("✅ لایسنس فعال است", 21f, green, true, true)
+                addText("تا تاریخ: ${formatPersianDateTime(expiry)}", 14f, muted, false, true)
+            }
+            addSpace(12)
+            addButton("ورود به پنل مدیریت") { showAdminLogin() }
+            addButton("مدیریت ماکروها (باز کردن پنل)") { 
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                finish() // بستن اکتیویتی تا پنل شناور دیده شود
+            }
+        } else {
+            addCard().apply {
+                addText("خوش آمدی", 21f, white, true, true)
+                addText("برای ادامه، نوع ورود را انتخاب کن.", 15f, muted, false, true)
+            }
+            addSpace(12)
+            addButton("ورود مدیر") { showAdminLogin() }
+            addButton("ورود کاربر") { showUserScreen() }
         }
-        addSpace(12)
-        addButton("ورود مدیر") { showAdminLogin() }
-        addButton("ورود کاربر") { showUserScreen() }
         addSpace(16)
         addText("برای فعال‌سازی برنامه، ورود کاربر و کد فعال‌سازی لازم است.", 13f, muted, false, true)
     }
@@ -182,17 +191,10 @@ class MainActivity : Activity() {
         addHeader()
         addText("ورود کاربر", 23f, white, true, true)
         addSpace(10)
-        val status = addText(
-            if (prefs.getBoolean("license_active", false)) "قبلاً روی این گوشی فعال‌سازی انجام شده است." else "کد فعال‌سازی را وارد کن.",
-            14f, muted, false, true
-        )
+        val status = addText("کد فعال‌سازی را وارد کن.", 14f, muted, false, true)
         val codeInput = addField("کد فعال‌سازی").apply { contentDescription = "کد فعال‌سازی" }
         addButton("فعال‌سازی") { activateCode(codeInput, status) }
         addButton("تنظیمات Accessibility") { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
-        addButton("پاک‌کردن ماکروی ذخیره‌شده", color = red) {
-            prefs.edit().remove("macro").apply()
-            Toast.makeText(this, "ماکروی ذخیره‌شده پاک شد.", Toast.LENGTH_SHORT).show()
-        }
         addButton("بازگشت به صفحه اول", color = panelColor) { showHome() }
     }
 
@@ -203,7 +205,7 @@ class MainActivity : Activity() {
         addSpace(12)
         val emailInput = addField("ایمیل حساب مدیر Supabase", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS)
         val passwordInput = addField("رمز عبور مدیر", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
-        val status = addText("با حسابی وارد شو که دسترسی مدیر آن در جدول app_admins ثبت شده است.", 14f, muted, false, true)
+        val status = addText("با حسابی وارد شو که دسترسی مدیر آن ثبت شده است.", 14f, muted, false, true)
         addSpace(10)
         addButton("ورود به پنل مدیریت") {
             val email = emailInput.text.toString().trim()
@@ -222,7 +224,7 @@ class MainActivity : Activity() {
                 runOnUiThread { adminToken = token; passwordInput.text.clear(); showAdminDashboard() }
             }
         }
-        addButton("بازگشت", color = panelColor) { showHome() }
+        addButton("بازگشت به خانه", color = panelColor) { showHome() }
     }
 
     private fun showAdminDashboard() {
@@ -272,7 +274,10 @@ class MainActivity : Activity() {
         val listContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(listContainer, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         addButton("بارگذاری / تازه‌سازی فهرست") { loadAdminCodes(listContainer, listStatus) }
-        addButton("خروج از حساب مدیر", color = red) { adminToken = null; showHome() }
+        
+        // ✅ دکمه بازگشت بدون خروج از نشست مدیر
+        addButton("بازگشت به خانه", color = panelColor) { showHome() }
+        
         loadAdminCodes(listContainer, listStatus)
     }
 
@@ -319,7 +324,7 @@ class MainActivity : Activity() {
         val expires = item.optString("expires_at", "—")
         val device = item.optString("device_id", "")
         val remaining = item.optLong("remaining_seconds", 0L)
-        val codeValue = item.optString("code", "") // دریافت خود کد از سرور
+        val codeValue = item.optString("code", "") // دریافت کد از سرور
 
         val statusLabel = when (statusValue) {
             "active" -> "فعال"; "unused" -> "استفاده‌نشده"
@@ -404,14 +409,11 @@ class MainActivity : Activity() {
         }
     }
 
-    // ✅ تابع جدید برای حذف کد
     private fun deleteCode(id: String, button: Button) {
         val token = adminToken
         if (token.isNullOrBlank()) { Toast.makeText(this, "ابتدا دوباره وارد پنل مدیر شو.", Toast.LENGTH_SHORT).show(); return }
-        
         button.isEnabled = false
         button.text = "در حال حذف..."
-        
         runBackground(onError = { error ->
             button.isEnabled = true
             button.text = "🗑️ حذف از لیست"
@@ -421,18 +423,12 @@ class MainActivity : Activity() {
                 put("action", "delete")
                 put("id", id)
             }, token)
-            
             if (response.first !in 200..299 || !response.second.optBoolean("success", false)) {
                 throw Exception(response.second.optString("message", response.second.optString("error", "سرور عملیات حذف را تأیید نکرد.")))
             }
-            
             runOnUiThread {
                 Toast.makeText(this, "کد با موفقیت حذف شد.", Toast.LENGTH_SHORT).show()
-                // بارگذاری مجدد لیست برای به‌روزرسانی
-                val listContainer = root.getChildAt(root.childCount - 2) as LinearLayout // پیدا کردن کانتینر لیست
-                val listStatus = root.getChildAt(root.childCount - 3) as TextView // پیدا کردن متن وضعیت
-                // راه ساده‌تر: فراخوانی مستقیم showAdminDashboard برای رفرش کامل
-                showAdminDashboard()
+                showAdminDashboard() // رفرش کامل پنل
             }
         }
     }
@@ -484,6 +480,7 @@ class MainActivity : Activity() {
                 status.setTextColor(green)
                 codeInput.text.clear()
                 Toast.makeText(this, "فعال‌سازی انجام شد.", Toast.LENGTH_SHORT).show()
+                showHome() // بازگشت خودکار به خانه پس از فعال‌سازی
             }
         }
     }
