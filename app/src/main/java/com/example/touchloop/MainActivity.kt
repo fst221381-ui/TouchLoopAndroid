@@ -23,6 +23,9 @@ import org.json.JSONObject
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 
 class MainActivity : Activity() {
 
@@ -191,8 +194,30 @@ class MainActivity : Activity() {
         
         fetchAndShowAnnouncement()
         
-        if (prefs.getBoolean("license_active", false)) {
-            val expiry = prefs.getString("license_expires_at", "—") ?: "—"
+        val isLicenseActive = prefs.getBoolean("license_active", false)
+        val expiryText = prefs.getString("license_expires_at", null)
+        var isExpiredOrBlocked = false
+        
+        // ✅ بررسی محلی انقضای کد
+        if (isLicenseActive && expiryText != null) {
+            try {
+                val formatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply {
+                    timeZone = TimeZone.getTimeZone("UTC")
+                }
+                val expiry = formatter.parse(expiryText.take(19))
+                if (expiry != null && System.currentTimeMillis() >= expiry.time) {
+                    isExpiredOrBlocked = true
+                    // پاک کردن لایسنس منقضی شده از حافظه تا کاربر مجبور به ورود کد جدید شود
+                    prefs.edit().putBoolean("license_active", false).apply()
+                }
+            } catch (_: Exception) {
+                isExpiredOrBlocked = true
+                prefs.edit().putBoolean("license_active", false).apply()
+            }
+        }
+        
+        if (isLicenseActive && !isExpiredOrBlocked) {
+            val expiry = expiryText ?: "—"
             addCard().apply {
                 addText("✅ لایسنس فعال است", 21f, green, true, true)
                 addText("تا تاریخ: ${formatPersianDateTime(expiry)}", 14f, muted, false, true)
@@ -221,15 +246,38 @@ class MainActivity : Activity() {
             addButton("ورود به پنل مدیریت") { showAdminLogin() }
         } else {
             addCard().apply {
-                addText("خوش آمدی", 21f, white, true, true)
-                addText("برای ادامه، نوع ورود را انتخاب کن.", 15f, muted, false, true)
+                if (isExpiredOrBlocked) {
+                    // ✅ نمایش پیام انقضا/مسدودی به جای لایسنس فعال
+                    addText("⚠️ ماکرو منقضی یا مسدود شده است", 21f, red, true, true)
+                    addText("لطفاً کد فعال‌سازی جدید خود را وارد کنید.", 14f, muted, false, true)
+                } else {
+                    addText("خوش آمدی", 21f, white, true, true)
+                    addText("برای ادامه، نوع ورود را انتخاب کن.", 15f, muted, false, true)
+                }
             }
             addSpace(12)
-            addButton("ورود مدیر") { showAdminLogin() }
-            addButton("ورود کاربر") { showUserScreen() }
+            
+            if (isExpiredOrBlocked) {
+                // ✅ نمایش مستقیم فرم ورود کد جدید
+                showUserActivationForm()
+            } else {
+                addButton("ورود مدیر") { showAdminLogin() }
+                addButton("ورود کاربر") { showUserScreen() }
+            }
         }
-        addSpace(16)
-        addText("برای فعال‌سازی برنامه، ورود کاربر و کد فعال‌سازی لازم است.", 13f, muted, false, true)
+        
+        if (!isExpiredOrBlocked) {
+            addSpace(16)
+            addText("برای فعال‌سازی برنامه، ورود کاربر و کد فعال‌سازی لازم است.", 13f, muted, false, true)
+        }
+    }
+
+    // ✅ تابع جدید برای نمایش فرم فعال‌سازی وقتی کد منقضی شده
+    private fun showUserActivationForm() {
+        val status = addText("کد فعال‌سازی جدید را وارد کن.", 14f, muted, false, true)
+        val codeInput = addField("کد فعال‌سازی").apply { contentDescription = "کد فعال‌سازی" }
+        addButton("فعال‌سازی") { activateCode(codeInput, status) }
+        addButton("ورود مدیر", color = panelColor) { showAdminLogin() }
     }
 
     private fun showMacrosManager() {
