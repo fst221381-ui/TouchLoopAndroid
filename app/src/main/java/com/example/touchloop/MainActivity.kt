@@ -34,11 +34,11 @@ class MainActivity : Activity() {
     private val muted = Color.rgb(190, 202, 220)
     private val green = Color.rgb(60, 190, 130)
     private val red = Color.rgb(235, 90, 100)
+    private val orange = Color.rgb(245, 158, 66)
 
     private lateinit var root: LinearLayout
     private var adminToken: String? = null
     private var generatedCode: String? = null
-    private var busy = false
 
     private val prefs by lazy { getSharedPreferences("touch_loop", MODE_PRIVATE) }
     private val apiKey by lazy { getString(R.string.supabase_publishable_key) }
@@ -155,6 +155,15 @@ class MainActivity : Activity() {
         } catch (_: Exception) { isoDate }
     }
 
+    private fun openAccessibilityService() {
+        try {
+            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            startActivity(intent)
+        } catch (e: Exception) {
+            Toast.makeText(this, "خطا در باز کردن تنظیمات", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun showHome() {
         adminToken = null
         newRoot()
@@ -169,11 +178,31 @@ class MainActivity : Activity() {
                 addText("تا تاریخ: ${formatPersianDateTime(expiry)}", 14f, muted, false, true)
             }
             addSpace(12)
-            addButton("ورود به پنل مدیریت") { showAdminLogin() }
-            addButton("مدیریت ماکروها (باز کردن پنل)") { 
-                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                finish()
+            
+            // ✅ مدیریت ماکروهای ذخیره‌شده
+            addButton("📂 مدیریت ماکروهای ذخیره‌شده") {
+                showMacrosManager()
             }
+            
+            // ✅ فعال‌سازی سرویس دسترسی
+            addButton("⚙️ فعال‌سازی سرویس دسترسی (Accessibility)") {
+                openAccessibilityService()
+            }
+            
+            addSpace(8)
+            addCard().apply {
+                addText("📋 راهنمای فعال‌سازی پنل شناور:", 16f, cyan, true, true)
+                addText("۱. دکمه بالا را بزنید تا وارد تنظیمات دسترسی شوید.", 13f, white)
+                addText("۲. در لیست، «Touch Loop automation» را پیدا کنید.", 13f, white)
+                addText("۳. آن را روشن کنید و در پیام هشدار، OK را بزنید.", 13f, white)
+                addText("۴. پنل شناور روی صفحه ظاهر می‌شود! 🎉", 13f, white)
+                addText("", 8f, white)
+                addText("💡 نکته: برای ضبط ماکرو، از پنل شناور استفاده کنید.", 12f, muted)
+                addText("برای اجرای ماکروهای ذخیره‌شده، از بخش مدیریت ماکروها استفاده کنید.", 12f, muted)
+            }
+            
+            addSpace(12)
+            addButton("ورود به پنل مدیریت") { showAdminLogin() }
         } else {
             addCard().apply {
                 addText("خوش آمدی", 21f, white, true, true)
@@ -185,6 +214,193 @@ class MainActivity : Activity() {
         }
         addSpace(16)
         addText("برای فعال‌سازی برنامه، ورود کاربر و کد فعال‌سازی لازم است.", 13f, muted, false, true)
+    }
+
+    // ✅ مدیریت ماکروهای ذخیره‌شده
+    private fun showMacrosManager() {
+        val dialog = AlertDialog.Builder(this).create()
+        dialog.window?.setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
+        
+        val scrollView = ScrollView(this).apply {
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+            setBackgroundColor(0xFF1A1D24.toInt())
+        }
+        
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+        }
+        
+        container.addView(TextView(this).apply {
+            text = "📂 ماکروهای ذخیره‌شده"
+            textSize = 18f
+            setTextColor(0xFFFFFFFF.toInt())
+            gravity = Gravity.CENTER
+            setPadding(dp(8), dp(8), dp(8), dp(16))
+        })
+        
+        val macros = getSavedMacros()
+        
+        if (macros.isEmpty()) {
+            container.addView(TextView(this).apply {
+                text = "هنوز ماکرویی ذخیره نشده است.\nاز پنل شناور، ماکرو ضبط کنید و سپس با نام ذخیره کنید."
+                textSize = 14f
+                setTextColor(muted)
+                gravity = Gravity.CENTER
+                setPadding(dp(16), dp(32), dp(16), dp(32))
+            })
+        } else {
+            macros.forEach { macroName ->
+                val macroView = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(12), dp(12), dp(12), dp(12))
+                    setBackgroundColor(0xFF2A2D35.toInt())
+                }
+                
+                val nameText = TextView(this).apply {
+                    text = macroName
+                    textSize = 15f
+                    setTextColor(cyan)
+                    setTypeface(null, Typeface.BOLD)
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                macroView.addView(nameText)
+                
+                val runBtn = Button(this).apply {
+                    text = "▶ اجرا"
+                    textSize = 12f
+                    setPadding(dp(10), dp(6), dp(10), dp(6))
+                    setTextColor(white)
+                    background = rounded(green, 8)
+                    setOnClickListener {
+                        runMacro(macroName)
+                        dialog.dismiss()
+                        Toast.makeText(this@MainActivity, "ماکرو $macroName در حال اجرا...", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                macroView.addView(runBtn)
+                
+                val deleteBtn = Button(this).apply {
+                    text = "🗑️"
+                    textSize = 14f
+                    setPadding(dp(10), dp(6), dp(10), dp(6))
+                    setTextColor(white)
+                    background = rounded(red, 8)
+                    setOnClickListener {
+                        deleteMacro(macroName)
+                        dialog.dismiss()
+                        showMacrosManager()
+                    }
+                }
+                macroView.addView(deleteBtn)
+                
+                container.addView(macroView)
+            }
+        }
+        
+        // دکمه ذخیره ماکروی فعلی با نام جدید
+        container.addView(Button(this).apply {
+            text = "💾 ذخیره ماکروی فعلی با نام جدید"
+            textSize = 14f
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            setOnClickListener {
+                dialog.dismiss()
+                showSaveMacroDialog()
+            }
+        })
+        
+        container.addView(Button(this).apply {
+            text = "بستن"
+            textSize = 14f
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            setOnClickListener { dialog.dismiss() }
+        })
+        
+        scrollView.addView(container)
+        dialog.setView(scrollView)
+        dialog.show()
+    }
+
+    // ✅ Dialog برای ذخیره ماکرو با نام
+    private fun showSaveMacroDialog() {
+        val input = EditText(this).apply {
+            hint = "نام ماکرو را وارد کنید (مثلاً: اینستاگرام)"
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+        }
+        
+        AlertDialog.Builder(this)
+            .setTitle("ذخیره ماکروی فعلی")
+            .setMessage("ماکروی ضبط‌شده فعلی با این نام ذخیره می‌شود.")
+            .setView(input)
+            .setPositiveButton("ذخیره") { _, _ ->
+                val name = input.text.toString().trim()
+                if (name.isNotBlank()) {
+                    saveMacroWithName(name)
+                    Toast.makeText(this, "ماکرو '$name' ذخیره شد", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "نام معتبر نیست", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("لغو", null)
+            .show()
+    }
+
+    // ✅ اجرای ماکرو
+    private fun runMacro(name: String) {
+        prefs.edit()
+            .putString("pending_macro_name", name)
+            .putBoolean("run_pending_macro", true)
+            .apply()
+        // Service در onServiceConnected یا دوره‌ای این را چک می‌کند
+        Toast.makeText(this, "ماکرو '$name' برای اجرا ارسال شد", Toast.LENGTH_SHORT).show()
+    }
+
+    // ✅ حذف ماکرو
+    private fun deleteMacro(name: String) {
+        deleteSavedMacro(name)
+        Toast.makeText(this, "ماکرو '$name' حذف شد", Toast.LENGTH_SHORT).show()
+    }
+
+    // ✅ توابع کمکی برای مدیریت ماکروها (خواندن از SharedPreferences)
+    private fun getSavedMacros(): List<String> {
+        val savedMacrosJson = prefs.getString("saved_macros", "[]") ?: "[]"
+        val savedMacros = JSONArray(savedMacrosJson)
+        val names = mutableListOf<String>()
+        for (i in 0 until savedMacros.length()) {
+            val macro = savedMacros.optJSONObject(i) ?: continue
+            names.add(macro.optString("name", "ماکرو ${i + 1}"))
+        }
+        return names
+    }
+
+    private fun saveMacroWithName(name: String) {
+        // این تابع باید از Service صدا زده شود، اما برای سادگی اینجا هم پیاده‌سازی می‌کنیم
+        // در واقع، کاربر باید از پنل شناور ماکرو را ضبط کند و سپس از اینجا ذخیره کند
+        // برای این کار، ماکروی current_macro را می‌خوانیم و با نام ذخیره می‌کنیم
+        val currentMacroJson = prefs.getString("current_macro", null) ?: return
+        val savedMacrosJson = prefs.getString("saved_macros", "[]") ?: "[]"
+        val savedMacros = JSONArray(savedMacrosJson)
+        
+        val macroObj = JSONObject()
+        macroObj.put("name", name)
+        macroObj.put("steps", JSONObject(currentMacroJson).optJSONArray("steps"))
+        savedMacros.put(macroObj)
+        
+        prefs.edit().putString("saved_macros", savedMacros.toString()).apply()
+    }
+
+    private fun deleteSavedMacro(name: String) {
+        val savedMacrosJson = prefs.getString("saved_macros", "[]") ?: "[]"
+        val savedMacros = JSONArray(savedMacrosJson)
+        val newMacros = JSONArray()
+        for (i in 0 until savedMacros.length()) {
+            val macro = savedMacros.optJSONObject(i) ?: continue
+            if (macro.optString("name") != name) {
+                newMacros.put(macro)
+            }
+        }
+        prefs.edit().putString("saved_macros", newMacros.toString()).apply()
     }
 
     private fun fetchAndShowAnnouncement() {
