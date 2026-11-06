@@ -59,7 +59,6 @@ class MacroAccessibilityService : AccessibilityService() {
     private var bubbleParams: WindowManager.LayoutParams? = null
     private var panelCollapsed = false
     
-    // ✅ قفل تاچ اختیاری (دستی)
     private var touchLockOverlay: View? = null
     private var isTouchLocked = false
     private var lockButton: Button? = null
@@ -282,7 +281,6 @@ class MacroAccessibilityService : AccessibilityService() {
                 status?.text = "در حال پخش…"
                 updateExecutionReport()
                 executionReport?.visibility = View.VISIBLE
-                // ✅ قفل خودکار هنگام پخش حذف شد
                 runNext(playbackToken) 
             }
         })
@@ -290,7 +288,6 @@ class MacroAccessibilityService : AccessibilityService() {
             if (steps.isEmpty()) status?.text = "ماکرویی برای ویرایش نیست" else showMacroEditor()
         })
 
-        // ✅ دکمه جدید قفل تاچ (اختیاری)
         lockButton = button(if (isTouchLocked) "🔓 باز کردن قفل" else "🔒 قفل صفحه") {
             if (isTouchLocked) {
                 hideTouchLock()
@@ -477,12 +474,11 @@ class MacroAccessibilityService : AccessibilityService() {
             .putInt("panel_width_dp", panelWidthDp).putInt("panel_height_dp", panelHeightDp).apply()
     }
 
-    // ✅ قفل تاچ اختیاری (با FLAG_NOT_TOUCH_MODAL برای اجازه کلیک روی پنل/حباب)
     private fun showTouchLock() {
         if (touchLockOverlay != null) return
         isTouchLocked = true
         touchLockOverlay = View(this).apply {
-            setBackgroundColor(0x22000000) // شفاف با ته‌رنگ
+            setBackgroundColor(0x22000000)
             setOnTouchListener { _, _ -> true }
         }
         val params = WindowManager.LayoutParams(
@@ -495,7 +491,6 @@ class MacroAccessibilityService : AccessibilityService() {
         )
         try { 
             wm.addView(touchLockOverlay, params)
-            // پنل و حباب را بالای overlay بیاور
             val currentPanel = panel
             val currentParams = panelParams
             if (currentPanel != null && currentParams != null) {
@@ -517,37 +512,38 @@ class MacroAccessibilityService : AccessibilityService() {
         touchLockOverlay = null
     }
 
-    // ✅ حذف موقت overlay قبل از اجرای gesture تا ماکرو بدون اختلال اجرا شود
-    private fun temporarilyHideLockForGesture(action: () -> Unit) {
+    private fun temporarilyHideLockForGesture(action: (onComplete: () -> Unit) -> Unit) {
         if (!isTouchLocked || touchLockOverlay == null) {
-            action()
+            action { }
             return
         }
         val overlay = touchLockOverlay
         try { wm.removeView(overlay) } catch (_: Exception) {}
-        action()
-        // بعد از gesture، دوباره overlay را نمایش می‌دهیم
         handler.postDelayed({
-            if (isTouchLocked && overlay != null && touchLockOverlay === overlay) {
-                val params = WindowManager.LayoutParams(
-                    WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
-                    WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or 
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or 
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-                    PixelFormat.TRANSLUCENT
-                )
-                try { 
-                    wm.addView(overlay, params)
-                    val currentPanel = panel
-                    val currentParams = panelParams
-                    if (currentPanel != null && currentParams != null) {
-                        wm.removeView(currentPanel)
-                        wm.addView(currentPanel, currentParams)
+            action {
+                handler.postDelayed({
+                    if (isTouchLocked && overlay != null && touchLockOverlay === overlay) {
+                        val params = WindowManager.LayoutParams(
+                            WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
+                            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or 
+                            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or 
+                            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                            PixelFormat.TRANSLUCENT
+                        )
+                        try { 
+                            wm.addView(overlay, params)
+                            val currentPanel = panel
+                            val currentParams = panelParams
+                            if (currentPanel != null && currentParams != null) {
+                                wm.removeView(currentPanel)
+                                wm.addView(currentPanel, currentParams)
+                            }
+                        } catch (_: Exception) {}
                     }
-                } catch (_: Exception) {}
+                }, 150L)
             }
-        }, 150L)
+        }, 100L)
     }
 
     private fun showPointPicker() {
@@ -646,11 +642,14 @@ class MacroAccessibilityService : AccessibilityService() {
             val path = Path().apply { moveTo(step.x, step.y) }
             val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 70L)).build()
             
-            // ✅ حذف موقت overlay قبل از gesture
-            temporarilyHideLockForGesture {
+            temporarilyHideLockForGesture { onComplete ->
                 dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
-                    override fun onCompleted(gestureDescription: GestureDescription?) { runNext(session) }
+                    override fun onCompleted(gestureDescription: GestureDescription?) { 
+                        onComplete()
+                        runNext(session) 
+                    }
                     override fun onCancelled(gestureDescription: GestureDescription?) {
+                        onComplete()
                         if (playing && session == playbackToken) handler.postDelayed({ runNext(session) }, 100L)
                     }
                 }, null)
@@ -720,13 +719,14 @@ class MacroAccessibilityService : AccessibilityService() {
         val duration = (baseDuration / playbackSpeed).toLong().coerceIn(100L, 3000L)
         val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, duration)).build()
         
-        // ✅ حذف موقت overlay قبل از gesture
-        temporarilyHideLockForGesture {
+        temporarilyHideLockForGesture { onComplete ->
             val accepted = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
                 override fun onCompleted(gestureDescription: GestureDescription?) {
+                    onComplete()
                     if (hasValidLicense() && playing && session == playbackToken) handler.postDelayed({ runNext(session) }, 50L)
                 }
                 override fun onCancelled(gestureDescription: GestureDescription?) {
+                    onComplete()
                     if (playing && session == playbackToken) { status?.text = "اسکرول لغو شد"; handler.postDelayed({ runNext(session) }, 150L) }
                 }
             }, null)
