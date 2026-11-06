@@ -157,10 +157,10 @@ class MainActivity : Activity() {
         } catch (_: Exception) { isoDate }
     }
 
-    // ✅ باز کردن صفحه رفع محدودیت (Restricted Settings)
+    // ✅ اصلاح شده: استفاده از رشته متنی به جای ثابت API 33 برای جلوگیری از خطای کامپایل
     private fun openRestrictedSettings() {
         try {
-            val intent = Intent(Settings.ACTION_MANAGE_APP_RESTRICTED_SETTINGS).apply {
+            val intent = Intent("android.settings.MANAGE_APP_RESTRICTED_SETTINGS").apply {
                 data = Uri.parse("package:$packageName")
             }
             startActivity(intent)
@@ -176,7 +176,6 @@ class MainActivity : Activity() {
         }
     }
 
-    // ✅ باز کردن مستقیم صفحه سرویس Accessibility
     private fun openAccessibilityService() {
         try {
             val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
@@ -201,12 +200,10 @@ class MainActivity : Activity() {
             }
             addSpace(12)
             
-            // ✅ دکمه رفع محدودیت (مهم‌ترین دکمه برای اندروید 13+)
             addButton("🔓 رفع محدودیت دسترسی", color = orange) {
                 openRestrictedSettings()
             }
             
-            // ✅ دکمه فعال‌سازی سرویس Accessibility
             addButton("⚙️ فعال‌سازی سرویس Touch Loop") {
                 openAccessibilityService()
             }
