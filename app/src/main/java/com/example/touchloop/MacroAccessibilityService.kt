@@ -58,7 +58,7 @@ class MacroAccessibilityService : AccessibilityService() {
     private var panelParams: WindowManager.LayoutParams? = null
     private var bubbleParams: WindowManager.LayoutParams? = null
     private var panelCollapsed = false
-    private var touchBlocker: View? = null
+    private var touchLockOverlay: View? = null
 
     private var panelWidthDp = 220
     private var panelHeightDp = 320
@@ -273,7 +273,7 @@ class MacroAccessibilityService : AccessibilityService() {
             if (recording) { handler.removeCallbacks(flushScrollRunnable); flushPendingScroll() }
             recording = false; stopPlayback(); saveMacro()
             if (steps.isEmpty()) { status?.text = "ابتدا ماکرو ضبط کن" }
-            else { playbackToken++; loopCount = 1; playing = true; playIndex = 0; status?.text = "در حال پخش…"; updateExecutionReport(); executionReport?.visibility = View.VISIBLE; showTouchBlocker(); runNext(playbackToken) }
+            else { playbackToken++; loopCount = 1; playing = true; playIndex = 0; status?.text = "در حال پخش…"; updateExecutionReport(); executionReport?.visibility = View.VISIBLE; showTouchLock(); runNext(playbackToken) }
         })
         contentContainer.addView(button("✎ ویرایش") {
             if (steps.isEmpty()) status?.text = "ماکرویی برای ویرایش نیست" else showMacroEditor()
@@ -458,24 +458,42 @@ class MacroAccessibilityService : AccessibilityService() {
             .putInt("panel_width_dp", panelWidthDp).putInt("panel_height_dp", panelHeightDp).apply()
     }
 
-    private fun showTouchBlocker() {
-        if (touchBlocker != null) return
-        touchBlocker = View(this).apply {
+    // ✅ قفل تاچ با FLAG_NOT_TOUCH_MODAL - فقط خارج از پنل/حباب قفل می‌شود
+    private fun showTouchLock() {
+        if (touchLockOverlay != null) return
+        touchLockOverlay = View(this).apply {
             setBackgroundColor(0x00000000)
-            setOnTouchListener { _, _ -> true }
+            setOnTouchListener { _, _ -> true } // consume touches
         }
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or 
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or 
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL, // کلید حل مشکل!
             PixelFormat.TRANSLUCENT
         )
-        try { wm.addView(touchBlocker, params) } catch (_: Exception) {}
+        try { 
+            wm.addView(touchLockOverlay, params)
+            // پنل را روی touchLockOverlay بیاور
+            val currentPanel = panel
+            val currentParams = panelParams
+            if (currentPanel != null && currentParams != null) {
+                wm.removeView(currentPanel)
+                wm.addView(currentPanel, currentParams)
+            }
+            val currentBubble = bubble
+            val currentBubbleParams = bubbleParams
+            if (currentBubble != null && currentBubbleParams != null) {
+                wm.removeView(currentBubble)
+                wm.addView(currentBubble, currentBubbleParams)
+            }
+        } catch (_: Exception) {}
     }
 
-    private fun hideTouchBlocker() {
-        touchBlocker?.let { try { wm.removeView(it) } catch (_: Exception) {} }
-        touchBlocker = null
+    private fun hideTouchLock() {
+        touchLockOverlay?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+        touchLockOverlay = null
     }
 
     private fun showPointPicker() {
@@ -752,7 +770,7 @@ class MacroAccessibilityService : AccessibilityService() {
         playIndex = 0
         loopCount = 0
         executionReport?.visibility = View.GONE
-        hideTouchBlocker()
+        hideTouchLock()
     }
 
     private fun stopAll() {
