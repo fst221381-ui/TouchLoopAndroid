@@ -185,215 +185,119 @@ class MainActivity : Activity() {
     }
 
     private fun showHome() {
-    private fun showHome() {
-    adminToken = null
-    newRoot()
-    addHeader()
-    
-    fetchAndShowAnnouncement()
-    
-    // ✅ بررسی مجدد لایسنس در هر بار ورود به صفحه اصلی
-    if (!hasValidLicense()) {
-        // لایسنس منقضی یا مسدود شده - نمایش صفحه ورود کد
-        addCard().apply {
-            addText("❌ لایسنس منقضی یا مسدود شده است", 21f, red, true, true)
-            addText("برای ادامه استفاده، لطفاً کد فعال‌سازی جدید وارد کنید.", 14f, muted, false, true)
+        adminToken = null
+        newRoot()
+        addHeader()
+        
+        fetchAndShowAnnouncement()
+        
+        if (prefs.getBoolean("license_active", false)) {
+            val expiry = prefs.getString("license_expires_at", "—") ?: "—"
+            addCard().apply {
+                addText("✅ لایسنس فعال است", 21f, green, true, true)
+                addText("تا تاریخ: ${formatPersianDateTime(expiry)}", 14f, muted, false, true)
+            }
+            addSpace(12)
+            
+            addButton("📂 مدیریت ماکروهای ذخیره‌شده") { showMacrosManager() }
+            addButton("⚙️ فعال‌سازی سرویس دسترسی (Accessibility)", color = cyan) { openAccessibilityService() }
+            addButton("🔓 رفع محدودیت دسترسی (Allow restricted settings)", color = orange) { openRestrictedSettings() }
+            
+            addSpace(8)
+            addCard().apply {
+                addText("📋 راهنمای دقیق فعال‌سازی (اندروید ۱۳+)", 16f, cyan, true, true)
+                addText("۱. روی دکمه «⚙️ فعال‌سازی سرویس دسترسی» بزنید.", 13f, white)
+                addText("۲. وارد بخش «برنامه‌های نصب‌شده» شوید و روی «Touch Loop automation» کلیک کنید.", 13f, white)
+                addText("(در این مرحله فعال نمی‌شود و خطا می‌دهد؛ این طبیعی است.)", 12f, muted)
+                addText("۳. به برنامه Touch Loop برگردید.", 13f, white)
+                addText("۴. حالا روی دکمه «🔓 رفع محدودیت دسترسی» بزنید.", 13f, white)
+                addText("۵. در صفحه‌ای که باز می‌شود، روی سه نقطه (⋮) بالای صفحه بزنید و گزینه «Allow restricted settings» را انتخاب و تأیید کنید.", 13f, white)
+                addText("۶. دوباره به برنامه برگردید و روی دکمه «⚙️ فعال‌سازی سرویس دسترسی» بزنید.", 13f, white)
+                addText("۷. دوباره وارد بخش «برنامه‌های نصب‌شده» شوید.", 13f, white)
+                addText("۸. حالا می‌توانید «Touch Loop automation» را روشن کنید و OK را بزنید. 🎉", 13f, white)
+            }
+            
+            addSpace(12)
+            addButton("ورود به پنل مدیریت") { showAdminLogin() }
+        } else {
+            addCard().apply {
+                addText("خوش آمدی", 21f, white, true, true)
+                addText("برای ادامه، نوع ورود را انتخاب کن.", 15f, muted, false, true)
+            }
+            addSpace(12)
+            addButton("ورود مدیر") { showAdminLogin() }
+            addButton("ورود کاربر") { showUserScreen() }
         }
-        addSpace(12)
-        addButton("ورود کد فعال‌سازی جدید") { showUserScreen() }
         addSpace(16)
-        return
+        addText("برای فعال‌سازی برنامه، ورود کاربر و کد فعال‌سازی لازم است.", 13f, muted, false, true)
     }
-    
-    val expiry = prefs.getString("license_expires_at", "—") ?: "—"
-    addCard().apply {
-        addText("✅ لایسنس فعال است", 21f, green, true, true)
-        addText("تا تاریخ: ${formatPersianDateTime(expiry)}", 14f, muted, false, true)
-    }
-    addSpace(12)
-    
-    addButton("📂 مدیریت ماکروهای ذخیره‌شده") {
-        showMacrosManager()
-    }
-    
-    addButton("️ فعال‌سازی سرویس دسترسی (Accessibility)", color = cyan) {
-        openAccessibilityService()
-    }
-    
-    addButton("🔓 رفع محدودیت دسترسی (Allow restricted settings)", color = orange) {
-        openRestrictedSettings()
-    }
-    
-    addSpace(8)
-    addCard().apply {
-        addText("📋 راهنمای دقیق فعال‌سازی (اندروید ۱۳+)", 16f, cyan, true, true)
-        addText(". روی دکمه «⚙️ فعال‌سازی سرویس دسترسی (Accessibility)» بزنید.", 13f, white)
-        addText("۲. در صفحه‌ای که باز می‌شود، وارد بخش «برنامه‌های نصب‌شده» شوید و روی «Touch Loop automation» کلیک کنید.", 13f, white)
-        addText("(در این مرحله فعال نمی‌شود و خطا می‌دهد؛ این طبیعی است.)", 12f, muted)
-        addText("۳. به برنامه Touch Loop برگردید.", 13f, white)
-        addText("۴. حالا روی دکمه «🔓 رفع محدودیت دسترسی (Allow restricted settings)» بزنید.", 13f, white)
-        addText(". در صفحه‌ای که باز می‌شود، روی سه نقطه (⋮) بالای صفحه بزنید و گزینه «Allow restricted settings / اجازه تنظیمات محدود» را انتخاب و تأیید کنید.", 13f, white)
-        addText("۶. دوباره به برنامه برگردید و روی دکمه «️ فعال‌سازی سرویس دسترسی (Accessibility)» بزنید.", 13f, white)
-        addText("۷. دوباره وارد بخش «برنامه‌های نصب‌شده» شوید.", 13f, white)
-        addText("۸. حالا می‌توانید «Touch Loop automation» را روشن کنید و OK را بزنید. 🎉", 13f, white)
-    }
-    
-    addSpace(12)
-    addButton("ورود به پنل مدیریت") { showAdminLogin() }
-}
-
-// ✅ تابع بررسی لایسنس
-private fun hasValidLicense(): Boolean {
-    if (!prefs.getBoolean("license_active", false)) return false
-    val currentDevice = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: return false
-    if (prefs.getString("license_device_id", "") != currentDevice) return false
-    val expiryText = prefs.getString("license_expires_at", null) ?: return false
-    return try {
-        val formatter = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).apply {
-            timeZone = java.util.TimeZone.getTimeZone("UTC")
-        }
-        val expiry = formatter.parse(expiryText.take(19)) ?: return false
-        val isValid = System.currentTimeMillis() < expiry.time
-        if (!isValid) {
-            // لایسنس منقضی شده
-            prefs.edit().putBoolean("license_active", false).apply()
-        }
-        isValid
-    } catch (_: Exception) { false }
-}
 
     private fun showMacrosManager() {
         val dialog = AlertDialog.Builder(this).create()
         dialog.window?.setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
-        
-        val scrollView = ScrollView(this).apply {
-            setPadding(dp(16), dp(16), dp(16), dp(16))
-            setBackgroundColor(0xFF1A1D24.toInt())
-        }
-        
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(8), dp(8), dp(8), dp(8))
-        }
+        val scrollView = ScrollView(this).apply { setPadding(dp(16), dp(16), dp(16), dp(16)); setBackgroundColor(0xFF1A1D24.toInt()) }
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(8)) }
         
         container.addView(TextView(this).apply {
-            text = "📂 ماکروهای ذخیره‌شده"
-            textSize = 18f
-            setTextColor(0xFFFFFFFF.toInt())
-            gravity = Gravity.CENTER
-            setPadding(dp(8), dp(8), dp(8), dp(16))
+            text = "📂 ماکروهای ذخیره‌شده"; textSize = 18f; setTextColor(0xFFFFFFFF.toInt())
+            gravity = Gravity.CENTER; setPadding(dp(8), dp(8), dp(8), dp(16))
         })
         
         val macros = getSavedMacros()
-        
         if (macros.isEmpty()) {
             container.addView(TextView(this).apply {
                 text = "هنوز ماکرویی ذخیره نشده است.\nاز پنل شناور، ماکرو ضبط کنید و سپس با نام ذخیره کنید."
-                textSize = 14f
-                setTextColor(muted)
-                gravity = Gravity.CENTER
-                setPadding(dp(16), dp(32), dp(16), dp(32))
+                textSize = 14f; setTextColor(muted); gravity = Gravity.CENTER; setPadding(dp(16), dp(32), dp(16), dp(32))
             })
         } else {
             macros.forEach { macroName ->
                 val macroView = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    setPadding(dp(12), dp(12), dp(12), dp(12))
-                    setBackgroundColor(0xFF2A2D35.toInt())
+                    orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(12), dp(12), dp(12), dp(12)); setBackgroundColor(0xFF2A2D35.toInt())
                 }
-                
-                val nameText = TextView(this).apply {
-                    text = macroName
-                    textSize = 15f
-                    setTextColor(cyan)
-                    setTypeface(null, Typeface.BOLD)
+                macroView.addView(TextView(this).apply {
+                    text = macroName; textSize = 15f; setTextColor(cyan); setTypeface(null, Typeface.BOLD)
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                }
-                macroView.addView(nameText)
-                
-                val runBtn = Button(this).apply {
-                    text = "▶ اجرا"
-                    textSize = 12f
-                    setPadding(dp(10), dp(6), dp(10), dp(6))
-                    setTextColor(white)
-                    background = rounded(green, 8)
-                    setOnClickListener {
-                        runMacro(macroName)
-                        dialog.dismiss()
-                        Toast.makeText(this@MainActivity, "ماکرو $macroName در حال اجرا...", Toast.LENGTH_SHORT).show()
-                    }
-                }
-                macroView.addView(runBtn)
-                
-                val deleteBtn = Button(this).apply {
-                    text = "🗑️"
-                    textSize = 14f
-                    setPadding(dp(10), dp(6), dp(10), dp(6))
-                    setTextColor(white)
-                    background = rounded(red, 8)
-                    setOnClickListener {
-                        deleteMacro(macroName)
-                        dialog.dismiss()
-                        showMacrosManager()
-                    }
-                }
-                macroView.addView(deleteBtn)
-                
+                })
+                macroView.addView(Button(this).apply {
+                    text = "▶ اجرا"; textSize = 12f; setPadding(dp(10), dp(6), dp(10), dp(6))
+                    setTextColor(white); background = rounded(green, 8)
+                    setOnClickListener { runMacro(macroName); dialog.dismiss(); Toast.makeText(this@MainActivity, "ماکرو $macroName در حال اجرا...", Toast.LENGTH_SHORT).show() }
+                })
+                macroView.addView(Button(this).apply {
+                    text = "🗑️"; textSize = 14f; setPadding(dp(10), dp(6), dp(10), dp(6))
+                    setTextColor(white); background = rounded(red, 8)
+                    setOnClickListener { deleteMacro(macroName); dialog.dismiss(); showMacrosManager() }
+                })
                 container.addView(macroView)
             }
         }
         
         container.addView(Button(this).apply {
-            text = "💾 ذخیره ماکروی فعلی با نام جدید"
-            textSize = 14f
-            setPadding(dp(16), dp(12), dp(16), dp(12))
-            setOnClickListener {
-                dialog.dismiss()
-                showSaveMacroDialog()
-            }
+            text = "💾 ذخیره ماکروی فعلی با نام جدید"; textSize = 14f; setPadding(dp(16), dp(12), dp(16), dp(12))
+            setOnClickListener { dialog.dismiss(); showSaveMacroDialog() }
         })
-        
         container.addView(Button(this).apply {
-            text = "بستن"
-            textSize = 14f
-            setPadding(dp(16), dp(12), dp(16), dp(12))
+            text = "بستن"; textSize = 14f; setPadding(dp(16), dp(12), dp(16), dp(12))
             setOnClickListener { dialog.dismiss() }
         })
-        
         scrollView.addView(container)
         dialog.setView(scrollView)
         dialog.show()
     }
 
     private fun showSaveMacroDialog() {
-        val input = EditText(this).apply {
-            hint = "نام ماکرو را وارد کنید (مثلاً: اینستاگرام)"
-            setPadding(dp(16), dp(16), dp(16), dp(16))
-        }
-        
-        AlertDialog.Builder(this)
-            .setTitle("ذخیره ماکروی فعلی")
-            .setMessage("ماکروی ضبط‌شده فعلی با این نام ذخیره می‌شود.")
-            .setView(input)
-            .setPositiveButton("ذخیره") { _, _ ->
+        val input = EditText(this).apply { hint = "نام ماکرو را وارد کنید (مثلاً: اینستاگرام)"; setPadding(dp(16), dp(16), dp(16), dp(16)) }
+        AlertDialog.Builder(this).setTitle("ذخیره ماکروی فعلی").setMessage("ماکروی ضبط‌شده فعلی با این نام ذخیره می‌شود.")
+            .setView(input).setPositiveButton("ذخیره") { _, _ ->
                 val name = input.text.toString().trim()
-                if (name.isNotBlank()) {
-                    saveMacroWithName(name)
-                    Toast.makeText(this, "ماکرو '$name' ذخیره شد", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(this, "نام معتبر نیست", Toast.LENGTH_SHORT).show()
-                }
-            }
-            .setNegativeButton("لغو", null)
-            .show()
+                if (name.isNotBlank()) { saveMacroWithName(name); Toast.makeText(this, "ماکرو '$name' ذخیره شد", Toast.LENGTH_SHORT).show() }
+                else { Toast.makeText(this, "نام معتبر نیست", Toast.LENGTH_SHORT).show() }
+            }.setNegativeButton("لغو", null).show()
     }
 
     private fun runMacro(name: String) {
-        prefs.edit()
-            .putString("pending_macro_name", name)
-            .putBoolean("run_pending_macro", true)
-            .apply()
+        prefs.edit().putString("pending_macro_name", name).putBoolean("run_pending_macro", true).apply()
         Toast.makeText(this, "ماکرو '$name' برای اجرا ارسال شد", Toast.LENGTH_SHORT).show()
     }
 
@@ -417,12 +321,11 @@ private fun hasValidLicense(): Boolean {
         val currentMacroJson = prefs.getString("current_macro", null) ?: prefs.getString("macro", null) ?: return
         val savedMacrosJson = prefs.getString("saved_macros", "[]") ?: "[]"
         val savedMacros = JSONArray(savedMacrosJson)
-        
-        val macroObj = JSONObject()
-        macroObj.put("name", name)
-        macroObj.put("steps", JSONObject(currentMacroJson).optJSONArray("steps"))
+        val macroObj = JSONObject().apply {
+            put("name", name)
+            put("steps", JSONObject(currentMacroJson).optJSONArray("steps"))
+        }
         savedMacros.put(macroObj)
-        
         prefs.edit().putString("saved_macros", savedMacros.toString()).apply()
     }
 
@@ -432,45 +335,32 @@ private fun hasValidLicense(): Boolean {
         val newMacros = JSONArray()
         for (i in 0 until savedMacros.length()) {
             val macro = savedMacros.optJSONObject(i) ?: continue
-            if (macro.optString("name") != name) {
-                newMacros.put(macro)
-            }
+            if (macro.optString("name") != name) newMacros.put(macro)
         }
         prefs.edit().putString("saved_macros", newMacros.toString()).apply()
     }
 
     private fun fetchAndShowAnnouncement() {
         runBackground(onError = { }) {
-            val response = postJson(
-                adminEndpoint,
-                JSONObject().apply { put("action", "get_announcement") },
-                useAuthToken = false
-            )
+            val response = postJson(adminEndpoint, JSONObject().apply { put("action", "get_announcement") }, useAuthToken = false)
             if (response.first in 200..299) {
                 val announcement = response.second.optJSONObject("announcement")
                 if (announcement != null) {
                     val message = announcement.optString("message", "")
-                    if (message.isNotBlank()) {
-                        runOnUiThread { showAnnouncementDialog(message) }
-                    }
+                    if (message.isNotBlank()) runOnUiThread { showAnnouncementDialog(message) }
                 }
             }
         }
     }
 
     private fun showAnnouncementDialog(message: String) {
-        AlertDialog.Builder(this)
-            .setTitle("📢 پیام مدیر")
-            .setMessage(message)
-            .setPositiveButton("بستن") { d, _ -> d.dismiss() }
-            .show()
+        AlertDialog.Builder(this).setTitle("📢 پیام مدیر").setMessage(message)
+            .setPositiveButton("بستن") { d, _ -> d.dismiss() }.show()
     }
 
     private fun showUserScreen() {
-        newRoot()
-        addHeader()
-        addText("ورود کاربر", 23f, white, true, true)
-        addSpace(10)
+        newRoot(); addHeader()
+        addText("ورود کاربر", 23f, white, true, true); addSpace(10)
         val status = addText("کد فعال‌سازی را وارد کن.", 14f, muted, false, true)
         val codeInput = addField("کد فعال‌سازی").apply { contentDescription = "کد فعال‌سازی" }
         addButton("فعال‌سازی") { activateCode(codeInput, status) }
@@ -478,10 +368,8 @@ private fun hasValidLicense(): Boolean {
     }
 
     private fun showAdminLogin() {
-        newRoot()
-        addHeader()
-        addText("ورود مدیر", 23f, white, true, true)
-        addSpace(12)
+        newRoot(); addHeader()
+        addText("ورود مدیر", 23f, white, true, true); addSpace(12)
         val emailInput = addField("ایمیل حساب مدیر Supabase", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS)
         val passwordInput = addField("رمز عبور مدیر", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
         val status = addText("با حسابی وارد شو که دسترسی مدیر آن ثبت شده است.", 14f, muted, false, true)
@@ -492,9 +380,7 @@ private fun hasValidLicense(): Boolean {
             if (email.isBlank() || password.isBlank()) { status.text = "ایمیل و رمز عبور را وارد کن."; return@addButton }
             status.text = "در حال بررسی اطلاعات ورود..."
             runBackground(onError = { error -> status.text = "خطای اتصال: $error" }) {
-                val response = postJson("$baseUrl/auth/v1/token?grant_type=password", JSONObject().apply {
-                    put("email", email); put("password", password)
-                }, useAuthToken = false)
+                val response = postJson("$baseUrl/auth/v1/token?grant_type=password", JSONObject().apply { put("email", email); put("password", password) }, useAuthToken = false)
                 val token = response.second.optString("access_token", "")
                 if (response.first !in 200..299 || token.isBlank()) {
                     val message = response.second.optString("msg", response.second.optString("message", response.second.optString("error_description", response.second.optString("error", "ورود ناموفق بود."))))
@@ -508,11 +394,9 @@ private fun hasValidLicense(): Boolean {
 
     private fun showAdminDashboard() {
         if (adminToken.isNullOrBlank()) { showAdminLogin(); return }
-        newRoot()
-        addHeader()
+        newRoot(); addHeader()
         addText("پنل مدیریت", 23f, white, true, true)
-        addText("ساخت، مشاهده و مدیریت کدهای فعال‌سازی", 14f, muted, false, true)
-        addSpace(14)
+        addText("ساخت، مشاهده و مدیریت کدهای فعال‌سازی", 14f, muted, false, true); addSpace(14)
         val daysInput = addField("مدت اعتبار به روز؛ مثلاً 30", InputType.TYPE_CLASS_NUMBER)
         val createStatus = addText("برای ساخت کد، مدت اعتبار را وارد کن.", 14f, muted, false, true)
         addButton("ساخت کد فعال‌سازی") {
@@ -526,14 +410,11 @@ private fun hasValidLicense(): Boolean {
                 val body = response.second
                 val code = body.optString("code", "")
                 val success = body.optBoolean("success", false)
-                if (response.first !in 200..299 || !success || code.isBlank()) {
-                    throw Exception(body.optString("message", body.optString("error", "ساخت کد ناموفق بود.")))
-                }
+                if (response.first !in 200..299 || !success || code.isBlank()) throw Exception(body.optString("message", body.optString("error", "ساخت کد ناموفق بود.")))
                 generatedCode = code
                 runOnUiThread {
                     createStatus.text = "کد جدید:\n$code\n\nاعتبار: $days روز"
-                    createStatus.setTextColor(green)
-                    daysInput.text.clear()
+                    createStatus.setTextColor(green); daysInput.text.clear()
                 }
             }
         }
@@ -547,9 +428,7 @@ private fun hasValidLicense(): Boolean {
             }
         }
         addButton("📢 ارسال پیام عمومی") { showCreateAnnouncementDialog() }
-        addSpace(8)
-        addText("فهرست کدها", 20f, white, true, true)
-        addSpace(6)
+        addSpace(8); addText("فهرست کدها", 20f, white, true, true); addSpace(6)
         val listStatus = addText("برای دریافت اطلاعات، دکمه بارگذاری را بزن.", 14f, muted, false, true)
         val listContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(listContainer, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -559,19 +438,12 @@ private fun hasValidLicense(): Boolean {
     }
 
     private fun showCreateAnnouncementDialog() {
-        val input = EditText(this).apply {
-            hint = "پیام خود را بنویسید..."
-            setPadding(dp(16), dp(16), dp(16), dp(16))
-        }
-        AlertDialog.Builder(this)
-            .setTitle("پیام عمومی جدید")
-            .setView(input)
+        val input = EditText(this).apply { hint = "پیام خود را بنویسید..."; setPadding(dp(16), dp(16), dp(16), dp(16)) }
+        AlertDialog.Builder(this).setTitle("پیام عمومی جدید").setView(input)
             .setPositiveButton("ارسال") { _, _ ->
                 val message = input.text.toString().trim()
                 if (message.isNotBlank()) createAnnouncement(message)
-            }
-            .setNegativeButton("لغو", null)
-            .show()
+            }.setNegativeButton("لغو", null).show()
     }
 
     private fun createAnnouncement(message: String) {
@@ -590,13 +462,10 @@ private fun hasValidLicense(): Boolean {
     private fun loadAdminCodes(container: LinearLayout, status: TextView) {
         val token = adminToken
         if (token.isNullOrBlank()) { status.text = "نشست مدیر موجود نیست."; return }
-        status.text = "در حال دریافت فهرست کدها..."
-        container.removeAllViews()
+        status.text = "در حال دریافت فهرست کدها..."; container.removeAllViews()
         runBackground(onError = { error -> status.text = "خطای دریافت فهرست: $error" }) {
             val response = postJson(adminEndpoint, JSONObject().apply { put("action", "list") }, token)
-            if (response.first !in 200..299) {
-                throw Exception(response.second.optString("message", response.second.optString("error", "سرور فهرست کدها را برنگرداند.")))
-            }
+            if (response.first !in 200..299) throw Exception(response.second.optString("message", response.second.optString("error", "سرور فهرست کدها را برنگرداند.")))
             val body = response.second
             val codes = body.optJSONArray("codes") ?: body.optJSONArray("data") ?: JSONArray()
             runOnUiThread {
@@ -610,8 +479,8 @@ private fun hasValidLicense(): Boolean {
                 }
                 status.text = "تعداد: ${codes.length()} | فعال: $active | استفاده‌نشده: $unused | منقضی: $expired | مسدود: $blocked"
                 if (codes.length() == 0) {
-                    val empty = TextView(this).apply { text = "هنوز کدی در فهرست وجود ندارد."; setTextColor(muted); textSize = 14f; gravity = Gravity.CENTER; setPadding(0, dp(18), 0, dp(18)) }
-                    container.addView(empty); return@runOnUiThread
+                    container.addView(TextView(this).apply { text = "هنوز کدی در فهرست وجود ندارد."; setTextColor(muted); textSize = 14f; gravity = Gravity.CENTER; setPadding(0, dp(18), 0, dp(18)) })
+                    return@runOnUiThread
                 }
                 for (i in 0 until codes.length()) {
                     val item = codes.optJSONObject(i) ?: continue
@@ -638,16 +507,14 @@ private fun hasValidLicense(): Boolean {
         }
 
         val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(12), dp(14), dp(12))
+            orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(12), dp(14), dp(12))
             background = rounded(panelColor, 14)
         }
         container.addView(card, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(12) })
 
         fun line(text: String, color: Int = white) {
             card.addView(TextView(this).apply {
-                this.text = text; textSize = 13f; setTextColor(color); gravity = Gravity.RIGHT
-                setPadding(0, dp(3), 0, dp(3))
+                this.text = text; textSize = 13f; setTextColor(color); gravity = Gravity.RIGHT; setPadding(0, dp(3), 0, dp(3))
             })
         }
 
@@ -662,12 +529,11 @@ private fun hasValidLicense(): Boolean {
 
         if (codeValue.isNotBlank() && codeValue != "null") {
             val codeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(8), 0, dp(8)) }
-            val codeText = TextView(this).apply {
+            codeRow.addView(TextView(this).apply {
                 text = "کد: $codeValue"; textSize = 15f; setTextColor(cyan); setTypeface(null, Typeface.BOLD)
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            }
-            codeRow.addView(codeText)
-            val copyBtn = Button(this).apply {
+            })
+            codeRow.addView(Button(this).apply {
                 text = "کپی"; textSize = 12f; setPadding(dp(12), dp(6), dp(12), dp(6))
                 setTextColor(white); background = rounded(cyan, 8)
                 setOnClickListener {
@@ -675,28 +541,25 @@ private fun hasValidLicense(): Boolean {
                     clipboard.setPrimaryClip(ClipData.newPlainText("Activation code", codeValue))
                     Toast.makeText(this@MainActivity, "کد کپی شد", Toast.LENGTH_SHORT).show()
                 }
-            }
-            codeRow.addView(copyBtn)
+            })
             card.addView(codeRow)
         } else {
             line("کد در پاسخ سرور موجود نبود.", muted)
         }
 
         if (statusValue == "blocked" || statusValue == "expired") {
-            val deleteBtn = Button(this).apply {
+            card.addView(Button(this).apply {
                 text = "🗑️ حذف از لیست"; textSize = 13f; isAllCaps = false; setTextColor(white)
                 background = rounded(red, 10); setPadding(dp(12), dp(8), dp(12), dp(8))
                 setOnClickListener { deleteCode(id, this) }
-            }
-            card.addView(deleteBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
         } else if (id.isNotBlank() && (statusValue == "active" || statusValue == "unused")) {
             val actionText = if (statusValue == "blocked") "رفع مسدودی" else "مسدود کردن"
             val actionColor = if (statusValue == "blocked") green else red
-            val actionButton = Button(this).apply {
+            card.addView(Button(this).apply {
                 text = actionText; isAllCaps = false; setTextColor(white); background = rounded(actionColor, 10)
                 setOnClickListener { setCodeBlocked(id, statusValue != "blocked", this) }
-            }
-            card.addView(actionButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
         }
     }
 
@@ -706,9 +569,7 @@ private fun hasValidLicense(): Boolean {
         button.isEnabled = false; button.text = "در حال حذف..."
         runBackground(onError = { error -> button.isEnabled = true; button.text = "🗑️ حذف از لیست"; Toast.makeText(this, "خطا در حذف: $error", Toast.LENGTH_LONG).show() }) {
             val response = postJson(adminEndpoint, JSONObject().apply { put("action", "delete"); put("id", id) }, token)
-            if (response.first !in 200..299 || !response.second.optBoolean("success", false)) {
-                throw Exception(response.second.optString("message", response.second.optString("error", "سرور عملیات حذف را تأیید نکرد.")))
-            }
+            if (response.first !in 200..299 || !response.second.optBoolean("success", false)) throw Exception(response.second.optString("message", response.second.optString("error", "سرور عملیات حذف را تأیید نکرد.")))
             runOnUiThread { Toast.makeText(this, "کد با موفقیت حذف شد.", Toast.LENGTH_SHORT).show(); showAdminDashboard() }
         }
     }
@@ -719,9 +580,7 @@ private fun hasValidLicense(): Boolean {
         button.isEnabled = false; button.text = "در حال انجام..."
         runBackground(onError = { error -> button.isEnabled = true; button.text = if (block) "مسدود کردن" else "رفع مسدودی"; Toast.makeText(this, "عملیات ناموفق بود: $error", Toast.LENGTH_LONG).show() }) {
             val response = postJson(adminEndpoint, JSONObject().apply { put("action", if (block) "block" else "unblock"); put("id", id) }, token)
-            if (response.first !in 200..299 || !response.second.optBoolean("success", false)) {
-                throw Exception(response.second.optString("message", response.second.optString("error", "سرور عملیات را تأیید نکرد.")))
-            }
+            if (response.first !in 200..299 || !response.second.optBoolean("success", false)) throw Exception(response.second.optString("message", response.second.optString("error", "سرور عملیات را تأیید نکرد.")))
             runOnUiThread { Toast.makeText(this, if (block) "کد مسدود شد." else "مسدودی کد برداشته شد.", Toast.LENGTH_SHORT).show(); showAdminDashboard() }
         }
     }
@@ -735,17 +594,14 @@ private fun hasValidLicense(): Boolean {
         runBackground(onError = { error -> status.text = "خطای اتصال: $error" }) {
             val response = postJson(activateEndpoint, JSONObject().apply { put("code", code); put("device_id", deviceId) }, useAuthToken = false)
             val body = response.second
-            if (response.first !in 200..299 || !body.optBoolean("success", false)) {
-                throw Exception(body.optString("message", body.optString("error", "کد تأیید نشد.")))
-            }
+            if (response.first !in 200..299 || !body.optBoolean("success", false)) throw Exception(body.optString("message", body.optString("error", "کد تأیید نشد.")))
             val expiresAt = body.optString("expires_at", "")
             val remaining = body.optLong("remaining_seconds", 0L)
-            if (expiresAt.isBlank() || remaining <= 0L) { throw Exception("پاسخ سرور ناقص است.") }
+            if (expiresAt.isBlank() || remaining <= 0L) throw Exception("پاسخ سرور ناقص است.")
             prefs.edit().putBoolean("license_active", true).putString("license_device_id", deviceId).putString("license_expires_at", expiresAt).putLong("license_remaining_seconds", remaining).apply()
             runOnUiThread {
                 status.text = "فعال‌سازی موفق بود.\nزمان باقی‌مانده: ${remaining / 86400} روز"
-                status.setTextColor(green)
-                codeInput.text.clear()
+                status.setTextColor(green); codeInput.text.clear()
                 Toast.makeText(this, "فعال‌سازی انجام شد.", Toast.LENGTH_SHORT).show()
                 showHome()
             }
@@ -772,6 +628,12 @@ private fun hasValidLicense(): Boolean {
     }
 
     private fun runBackground(onError: (String) -> Unit, work: () -> Unit) {
-        Thread { try { work() } catch (e: Exception) { val message = e.message ?: "خطای نامشخص"; runOnUiThread { onError(message) } } }.start()
+        Thread {
+            try { work() }
+            catch (e: Exception) {
+                val message = e.message ?: "خطای نامشخص"
+                runOnUiThread { onError(message) }
+            }
+        }.start()
     }
 }
