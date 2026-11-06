@@ -32,6 +32,7 @@ class MainActivity : Activity() {
     private val baseUrl = "https://rkllnarnvbylpphshweu.supabase.co"
     private val activateEndpoint = "$baseUrl/functions/v1/activate-code"
     private val adminEndpoint = "$baseUrl/functions/v1/admin-codes"
+    private val checkLicenseEndpoint = "$baseUrl/functions/v1/check-license"
 
     private val navy = Color.rgb(13, 25, 48)
     private val panelColor = Color.rgb(25, 41, 68)
@@ -54,6 +55,13 @@ class MainActivity : Activity() {
         window.statusBarColor = navy
         window.navigationBarColor = navy
         showHome()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (prefs.getBoolean("license_active", false)) {
+            checkLicenseOnline()
+        }
     }
 
     private fun newRoot(): LinearLayout {
@@ -187,6 +195,41 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun checkLicenseOnline() {
+        val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: return
+        Thread {
+            try {
+                val url = URL(checkLicenseEndpoint)
+                val connection = url.openConnection() as HttpURLConnection
+                connection.requestMethod = "POST"
+                connection.connectTimeout = 10000
+                connection.readTimeout = 10000
+                connection.doOutput = true
+                connection.setRequestProperty("apikey", apiKey)
+                connection.setRequestProperty("Content-Type", "application/json")
+                val body = JSONObject().apply { put("device_id", deviceId) }
+                OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(body.toString()) }
+                val responseCode = connection.responseCode
+                val stream = if (responseCode in 200..299) connection.inputStream else connection.errorStream
+                val responseText = stream?.bufferedReader()?.use { it.readText() } ?: ""
+                val responseJson = JSONObject(responseText)
+                if (responseJson.optBoolean("success", false)) {
+                    val isValid = responseJson.optBoolean("is_valid", false)
+                    val isBlocked = responseJson.optBoolean("is_blocked", false)
+                    val isExpired = responseJson.optBoolean("is_expired", false)
+                    if (!isValid || isBlocked || isExpired) {
+                        prefs.edit().putBoolean("license_active", false).apply()
+                        runOnUiThread {
+                            Toast.makeText(this, "کد شما مسدود یا منقضی شده است", Toast.LENGTH_LONG).show()
+                            showHome()
+                        }
+                    }
+                }
+                connection.disconnect()
+            } catch (e: Exception) { }
+        }.start()
+    }
+
     private fun showHome() {
         adminToken = null
         newRoot()
@@ -198,7 +241,6 @@ class MainActivity : Activity() {
         val expiryText = prefs.getString("license_expires_at", null)
         var isExpiredOrBlocked = false
         
-        // ✅ بررسی محلی انقضای کد
         if (isLicenseActive && expiryText != null) {
             try {
                 val formatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply {
@@ -207,7 +249,6 @@ class MainActivity : Activity() {
                 val expiry = formatter.parse(expiryText.take(19))
                 if (expiry != null && System.currentTimeMillis() >= expiry.time) {
                     isExpiredOrBlocked = true
-                    // پاک کردن لایسنس منقضی شده از حافظه تا کاربر مجبور به ورود کد جدید شود
                     prefs.edit().putBoolean("license_active", false).apply()
                 }
             } catch (_: Exception) {
@@ -247,7 +288,6 @@ class MainActivity : Activity() {
         } else {
             addCard().apply {
                 if (isExpiredOrBlocked) {
-                    // ✅ نمایش پیام انقضا/مسدودی به جای لایسنس فعال
                     addText("⚠️ ماکرو منقضی یا مسدود شده است", 21f, red, true, true)
                     addText("لطفاً کد فعال‌سازی جدید خود را وارد کنید.", 14f, muted, false, true)
                 } else {
@@ -258,7 +298,6 @@ class MainActivity : Activity() {
             addSpace(12)
             
             if (isExpiredOrBlocked) {
-                // ✅ نمایش مستقیم فرم ورود کد جدید
                 showUserActivationForm()
             } else {
                 addButton("ورود مدیر") { showAdminLogin() }
@@ -272,7 +311,6 @@ class MainActivity : Activity() {
         }
     }
 
-    // ✅ تابع جدید برای نمایش فرم فعال‌سازی وقتی کد منقضی شده
     private fun showUserActivationForm() {
         val status = addText("کد فعال‌سازی جدید را وارد کن.", 14f, muted, false, true)
         val codeInput = addField("کد فعال‌سازی").apply { contentDescription = "کد فعال‌سازی" }
@@ -446,15 +484,27 @@ class MainActivity : Activity() {
         addText("پنل مدیریت", 23f, white, true, true)
         addText("ساخت، مشاهده و مدیریت کدهای فعال‌سازی", 14f, muted, false, true); addSpace(14)
         val daysInput = addField("مدت اعتبار به روز؛ مثلاً 30", InputType.TYPE_CLASS_NUMBER)
+        // ✅ فیلد جدید: کد دلخواه
+        val customCodeInput = addField("کد دلخواه (اختیاری، حداقل ۸ کاراکتر) - خالی = کد تصادفی")
+        // ✅ فیلد جدید: توضیحات
+        val noteInput = addField("توضیحات / یادداشت (اختیاری) - مثلاً: مشتری علی")
         val createStatus = addText("برای ساخت کد، مدت اعتبار را وارد کن.", 14f, muted, false, true)
         addButton("ساخت کد فعال‌سازی") {
             val token = adminToken
             if (token.isNullOrBlank()) { createStatus.text = "دوباره وارد حساب مدیر شو."; showAdminLogin(); return@addButton }
             val days = daysInput.text.toString().trim().toIntOrNull()
             if (days == null || days !in 1..3650) { daysInput.error = "عددی بین 1 تا 3650 وارد کن."; return@addButton }
+            val customCode = customCodeInput.text.toString().trim()
+            val note = noteInput.text.toString().trim()
             createStatus.text = "در حال ساخت کد..."
             runBackground(onError = { error -> createStatus.text = "خطای ساخت کد: $error" }) {
-                val response = postJson(adminEndpoint, JSONObject().apply { put("action", "create"); put("duration_days", days) }, token)
+                val requestBody = JSONObject().apply {
+                    put("action", "create")
+                    put("duration_days", days)
+                    if (customCode.isNotBlank()) put("custom_code", customCode)
+                    if (note.isNotBlank()) put("note", note)
+                }
+                val response = postJson(adminEndpoint, requestBody, token)
                 val body = response.second
                 val code = body.optString("code", "")
                 val success = body.optBoolean("success", false)
@@ -462,7 +512,10 @@ class MainActivity : Activity() {
                 generatedCode = code
                 runOnUiThread {
                     createStatus.text = "کد جدید:\n$code\n\nاعتبار: $days روز"
-                    createStatus.setTextColor(green); daysInput.text.clear()
+                    createStatus.setTextColor(green)
+                    daysInput.text.clear()
+                    customCodeInput.text.clear()
+                    noteInput.text.clear()
                 }
             }
         }
@@ -548,6 +601,7 @@ class MainActivity : Activity() {
         val device = item.optString("device_id", "")
         val remaining = item.optLong("remaining_seconds", 0L)
         val codeValue = item.optString("code", "")
+        val noteValue = item.optString("note", "")
 
         val statusLabel = when (statusValue) {
             "active" -> "فعال"; "unused" -> "استفاده‌نشده"
@@ -574,6 +628,8 @@ class MainActivity : Activity() {
         line("تاریخ انقضا: ${formatPersianDateTime(expires)}", if (statusValue == "active") green else muted)
         if (statusValue == "active") line("زمان باقی‌مانده: ${remaining.coerceAtLeast(0L) / 86400} روز", green)
         if (device.isNotBlank() && device != "null") line("شناسه دستگاه: $device", muted)
+        // ✅ نمایش توضیحات کد
+        if (noteValue.isNotBlank() && noteValue != "null") line("📝 توضیحات: $noteValue", orange)
 
         if (codeValue.isNotBlank() && codeValue != "null") {
             val codeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(8), 0, dp(8)) }
@@ -595,6 +651,13 @@ class MainActivity : Activity() {
             line("کد در پاسخ سرور موجود نبود.", muted)
         }
 
+        // ✅ دکمه ویرایش توضیحات
+        card.addView(Button(this).apply {
+            text = "📝 ویرایش توضیحات"; textSize = 12f; isAllCaps = false; setTextColor(white)
+            background = rounded(navy, 10); setPadding(dp(12), dp(8), dp(12), dp(8))
+            setOnClickListener { showEditNoteDialog(id, noteValue) }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
+
         if (statusValue == "blocked" || statusValue == "expired") {
             card.addView(Button(this).apply {
                 text = "🗑️ حذف از لیست"; textSize = 13f; isAllCaps = false; setTextColor(white)
@@ -608,6 +671,33 @@ class MainActivity : Activity() {
                 text = actionText; isAllCaps = false; setTextColor(white); background = rounded(actionColor, 10)
                 setOnClickListener { setCodeBlocked(id, statusValue != "blocked", this) }
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
+        }
+    }
+
+    // ✅ Dialog ویرایش توضیحات
+    private fun showEditNoteDialog(id: String, currentNote: String) {
+        val input = EditText(this).apply {
+            setText(currentNote)
+            hint = "توضیحات جدید..."
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+        }
+        AlertDialog.Builder(this).setTitle("ویرایش توضیحات کد").setView(input)
+            .setPositiveButton("ذخیره") { _, _ ->
+                updateNote(id, input.text.toString().trim())
+            }.setNegativeButton("لغو", null).show()
+    }
+
+    // ✅ ارسال توضیحات جدید به سرور
+    private fun updateNote(id: String, note: String) {
+        val token = adminToken
+        if (token.isNullOrBlank()) { Toast.makeText(this, "ابتدا دوباره وارد پنل مدیر شو.", Toast.LENGTH_SHORT).show(); return }
+        runBackground(onError = { error -> Toast.makeText(this, "خطا: $error", Toast.LENGTH_LONG).show() }) {
+            val response = postJson(adminEndpoint, JSONObject().apply { put("action", "update_note"); put("id", id); put("note", note) }, token)
+            if (response.first in 200..299 && response.second.optBoolean("success", false)) {
+                runOnUiThread { Toast.makeText(this, "توضیحات ذخیره شد", Toast.LENGTH_SHORT).show(); showAdminDashboard() }
+            } else {
+                throw Exception(response.second.optString("message", "خطا در ذخیره توضیحات"))
+            }
         }
     }
 
