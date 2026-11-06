@@ -92,14 +92,27 @@ class MacroAccessibilityService : AccessibilityService() {
                 timeZone = java.util.TimeZone.getTimeZone("UTC")
             }
             val expiry = formatter.parse(expiryText.take(19)) ?: return false
-            System.currentTimeMillis() < expiry.time
+            val isValid = System.currentTimeMillis() < expiry.time
+            if (!isValid) {
+                // ✅ لایسنس منقضی شده - غیرفعال کردن
+                prefs.edit().putBoolean("license_active", false).apply()
+                stopPlayback()
+                handler.post {
+                    status?.text = "لایسنس منقضی شده است. لطفاً کد جدید وارد کنید."
+                    status?.setTextColor(Color.RED)
+                }
+            }
+            isValid
         } catch (_: Exception) { false }
     }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
-        if (!hasValidLicense()) { stopAll(); return }
+        if (!hasValidLicense()) { 
+            status?.text = "لایسنس معتبر نیست"
+            return 
+        }
         loadMacro()
         val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
         playbackSpeed = prefs.getFloat("playback_speed", 1.0f).coerceIn(0.25f, 8.0f)
@@ -187,7 +200,7 @@ class MacroAccessibilityService : AccessibilityService() {
         }
 
         val header = TextView(this).apply {
-            text = "☰ TOUCH LOOP"
+            text = " TOUCH LOOP"
             textSize = 13f * scale
             gravity = Gravity.CENTER
             setTextColor(0xFFFFFFFF.toInt())
@@ -320,7 +333,7 @@ class MacroAccessibilityService : AccessibilityService() {
         root.addView(scrollView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
 
         val resizeHandle = TextView(this).apply {
-            text = "⋮⋮"
+            text = "⋮"
             textSize = 14f * scale
             setTextColor(0xFF3FBED2.toInt())
             gravity = Gravity.CENTER
@@ -373,6 +386,12 @@ class MacroAccessibilityService : AccessibilityService() {
 
     private fun updateExecutionReport() {
         if (!playing || steps.isEmpty()) { executionReport?.visibility = View.GONE; return }
+        if (!hasValidLicense()) {
+            executionReport?.text = "❌ لایسنس منقضی شده"
+            executionReport?.setTextColor(Color.RED)
+            stopPlayback()
+            return
+        }
         val current = playIndex + 1
         val total = steps.size
         val remaining = total - current
@@ -512,40 +531,6 @@ class MacroAccessibilityService : AccessibilityService() {
         touchLockOverlay = null
     }
 
-    private fun temporarilyHideLockForGesture(action: (onComplete: () -> Unit) -> Unit) {
-        if (!isTouchLocked || touchLockOverlay == null) {
-            action { }
-            return
-        }
-        val overlay = touchLockOverlay
-        try { wm.removeView(overlay) } catch (_: Exception) {}
-        handler.postDelayed({
-            action {
-                handler.postDelayed({
-                    if (isTouchLocked && overlay != null && touchLockOverlay === overlay) {
-                        val params = WindowManager.LayoutParams(
-                            WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
-                            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or 
-                            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or 
-                            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-                            PixelFormat.TRANSLUCENT
-                        )
-                        try { 
-                            wm.addView(overlay, params)
-                            val currentPanel = panel
-                            val currentParams = panelParams
-                            if (currentPanel != null && currentParams != null) {
-                                wm.removeView(currentPanel)
-                                wm.addView(currentPanel, currentParams)
-                            }
-                        } catch (_: Exception) {}
-                    }
-                }, 150L)
-            }
-        }, 100L)
-    }
-
     private fun showPointPicker() {
         if (!hasValidLicense() || pointPicker != null) return
         val root = FrameLayout(this).apply { setBackgroundColor(0x22000000) }
@@ -589,7 +574,11 @@ class MacroAccessibilityService : AccessibilityService() {
     }
 
     private fun runNext(session: Int = playbackToken) {
-        if (!hasValidLicense()) { stopPlayback(); status?.text = "مجوز فعال نیست"; return }
+        if (!hasValidLicense()) { 
+            stopPlayback()
+            status?.text = "لایسنس منقضی شده"
+            return 
+        }
         if (!playing || session != playbackToken || steps.isEmpty()) return
         
         if (playIndex >= steps.size) {
@@ -642,18 +631,30 @@ class MacroAccessibilityService : AccessibilityService() {
             val path = Path().apply { moveTo(step.x, step.y) }
             val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 70L)).build()
             
-            temporarilyHideLockForGesture { onComplete ->
-                dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
-                    override fun onCompleted(gestureDescription: GestureDescription?) { 
-                        onComplete()
-                        runNext(session) 
-                    }
-                    override fun onCancelled(gestureDescription: GestureDescription?) {
-                        onComplete()
-                        if (playing && session == playbackToken) handler.postDelayed({ runNext(session) }, 100L)
-                    }
-                }, null)
+            // ✅ حذف overlay قبل از gesture برای اندرویدهای قدیمی
+            if (isTouchLocked && touchLockOverlay != null) {
+                try { wm.removeView(touchLockOverlay) } catch (_: Exception) {}
             }
+            
+            dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) { 
+                    // ✅ بازگرداندن overlay بعد از gesture
+                    if (isTouchLocked && touchLockOverlay == null) {
+                        handler.postDelayed({
+                            showTouchLock()
+                        }, 100L)
+                    }
+                    runNext(session) 
+                }
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    if (isTouchLocked && touchLockOverlay == null) {
+                        handler.postDelayed({
+                            showTouchLock()
+                        }, 100L)
+                    }
+                    if (playing && session == playbackToken) handler.postDelayed({ runNext(session) }, 100L)
+                }
+            }, null)
         } else {
             val root = rootInActiveWindow
             try { if (!clickNodeAt(root, step.x.toInt(), step.y.toInt())) status?.text = "کلیک در اندروید ۶ قابل اجرا نیست" }
@@ -719,20 +720,32 @@ class MacroAccessibilityService : AccessibilityService() {
         val duration = (baseDuration / playbackSpeed).toLong().coerceIn(100L, 3000L)
         val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, duration)).build()
         
-        temporarilyHideLockForGesture { onComplete ->
-            val accepted = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
-                override fun onCompleted(gestureDescription: GestureDescription?) {
-                    onComplete()
-                    if (hasValidLicense() && playing && session == playbackToken) handler.postDelayed({ runNext(session) }, 50L)
-                }
-                override fun onCancelled(gestureDescription: GestureDescription?) {
-                    onComplete()
-                    if (playing && session == playbackToken) { status?.text = "اسکرول لغو شد"; handler.postDelayed({ runNext(session) }, 150L) }
-                }
-            }, null)
-            
-            if (!accepted && playing && session == playbackToken) { status?.text = "اجرای اسکرول پذیرفته نشد"; handler.postDelayed({ runNext(session) }, 250L) }
+        // ✅ حذف overlay قبل از gesture برای اندرویدهای قدیمی
+        if (isTouchLocked && touchLockOverlay != null) {
+            try { wm.removeView(touchLockOverlay) } catch (_: Exception) {}
         }
+        
+        val accepted = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                // ✅ بازگرداندن overlay بعد از gesture
+                if (isTouchLocked && touchLockOverlay == null) {
+                    handler.postDelayed({
+                        showTouchLock()
+                    }, 100L)
+                }
+                if (hasValidLicense() && playing && session == playbackToken) handler.postDelayed({ runNext(session) }, 50L)
+            }
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                if (isTouchLocked && touchLockOverlay == null) {
+                    handler.postDelayed({
+                        showTouchLock()
+                    }, 100L)
+                }
+                if (playing && session == playbackToken) { status?.text = "اسکرول لغو شد"; handler.postDelayed({ runNext(session) }, 150L) }
+            }
+        }, null)
+        
+        if (!accepted && playing && session == playbackToken) { status?.text = "اجرای اسکرول پذیرفته نشد"; handler.postDelayed({ runNext(session) }, 250L) }
     }
 
     private fun performScrollAtPoint(node: AccessibilityNodeInfo?, x: Int, y: Int, forward: Boolean): Boolean {
