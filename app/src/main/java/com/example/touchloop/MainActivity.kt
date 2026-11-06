@@ -8,7 +8,6 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
-import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
@@ -35,7 +34,6 @@ class MainActivity : Activity() {
     private val muted = Color.rgb(190, 202, 220)
     private val green = Color.rgb(60, 190, 130)
     private val red = Color.rgb(235, 90, 100)
-    private val orange = Color.rgb(245, 158, 66)
 
     private lateinit var root: LinearLayout
     private var adminToken: String? = null
@@ -157,34 +155,6 @@ class MainActivity : Activity() {
         } catch (_: Exception) { isoDate }
     }
 
-    // ✅ اصلاح شده: استفاده از رشته متنی به جای ثابت API 33 برای جلوگیری از خطای کامپایل
-    private fun openRestrictedSettings() {
-        try {
-            val intent = Intent("android.settings.MANAGE_APP_RESTRICTED_SETTINGS").apply {
-                data = Uri.parse("package:$packageName")
-            }
-            startActivity(intent)
-        } catch (e: Exception) {
-            try {
-                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                    data = Uri.parse("package:$packageName")
-                }
-                startActivity(intent)
-            } catch (e2: Exception) {
-                Toast.makeText(this, "لطفاً دستی به تنظیمات برنامه بروید و Allow restricted settings را بزنید", Toast.LENGTH_LONG).show()
-            }
-        }
-    }
-
-    private fun openAccessibilityService() {
-        try {
-            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-            startActivity(intent)
-        } catch (e: Exception) {
-            Toast.makeText(this, "خطا در باز کردن تنظیمات", Toast.LENGTH_SHORT).show()
-        }
-    }
-
     private fun showHome() {
         adminToken = null
         newRoot()
@@ -199,28 +169,11 @@ class MainActivity : Activity() {
                 addText("تا تاریخ: ${formatPersianDateTime(expiry)}", 14f, muted, false, true)
             }
             addSpace(12)
-            
-            addButton("🔓 رفع محدودیت دسترسی", color = orange) {
-                openRestrictedSettings()
-            }
-            
-            addButton("⚙️ فعال‌سازی سرویس Touch Loop") {
-                openAccessibilityService()
-            }
-            
-            addSpace(8)
-            addCard().apply {
-                addText("📋 راهنمای فعال‌سازی:", 16f, cyan, true, true)
-                addText("۱. ابتدا دکمه «🔓 رفع محدودیت» را بزنید.", 13f, white)
-                addText("۲. در صفحه باز شده، روی سه نقطه بالا بزنید و «Allow restricted settings» را انتخاب کنید.", 13f, white)
-                addText("۳. سپس دکمه «⚙️ فعال‌سازی سرویس» را بزنید.", 13f, white)
-                addText("۴. در لیست، «Touch Loop automation» را پیدا کرده و روشن کنید.", 13f, white)
-                addText("۵. در پیام هشدار، «OK» را بزنید.", 13f, white)
-                addText("۶. پنل شناور روی صفحه ظاهر می‌شود! 🎉", 13f, white)
-            }
-            
-            addSpace(12)
             addButton("ورود به پنل مدیریت") { showAdminLogin() }
+            addButton("مدیریت ماکروها (باز کردن پنل)") { 
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                finish()
+            }
         } else {
             addCard().apply {
                 addText("خوش آمدی", 21f, white, true, true)
@@ -271,7 +224,6 @@ class MainActivity : Activity() {
         val status = addText("کد فعال‌سازی را وارد کن.", 14f, muted, false, true)
         val codeInput = addField("کد فعال‌سازی").apply { contentDescription = "کد فعال‌سازی" }
         addButton("فعال‌سازی") { activateCode(codeInput, status) }
-        addButton("تنظیمات Accessibility") { openAccessibilityService() }
         addButton("بازگشت به صفحه اول", color = panelColor) { showHome() }
     }
 
