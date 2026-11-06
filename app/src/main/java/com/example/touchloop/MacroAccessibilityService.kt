@@ -104,6 +104,8 @@ class MacroAccessibilityService : AccessibilityService() {
         panelHeightDp = prefs.getInt("panel_height_dp", 320).coerceIn(minPanelHeightDp, 800)
         showPanel()
         updateSpeedLabel()
+        // بررسی ماکروی در انتظار برای اجرا
+        checkAndRunPendingMacro()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -458,24 +460,22 @@ class MacroAccessibilityService : AccessibilityService() {
             .putInt("panel_width_dp", panelWidthDp).putInt("panel_height_dp", panelHeightDp).apply()
     }
 
-    // ✅ قفل تاچ با FLAG_NOT_TOUCH_MODAL - فقط خارج از پنل/حباب قفل می‌شود
     private fun showTouchLock() {
         if (touchLockOverlay != null) return
         touchLockOverlay = View(this).apply {
             setBackgroundColor(0x00000000)
-            setOnTouchListener { _, _ -> true } // consume touches
+            setOnTouchListener { _, _ -> true }
         }
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or 
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or 
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL, // کلید حل مشکل!
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT
         )
         try { 
             wm.addView(touchLockOverlay, params)
-            // پنل را روی touchLockOverlay بیاور
             val currentPanel = panel
             val currentParams = panelParams
             if (currentPanel != null && currentParams != null) {
@@ -778,8 +778,14 @@ class MacroAccessibilityService : AccessibilityService() {
         stopPlayback(); saveMacro()
     }
 
+    // ✅ ذخیره ماکروی جاری (برای استفاده در ضبط و پخش)
     private fun saveMacro() {
-        val rootObj = JSONObject(); rootObj.put("version", 2)
+        saveCurrentMacro()
+    }
+
+    private fun saveCurrentMacro() {
+        val rootObj = JSONObject()
+        rootObj.put("version", 2)
         val array = JSONArray()
         steps.forEach { step ->
             array.put(JSONObject().apply {
@@ -789,15 +795,126 @@ class MacroAccessibilityService : AccessibilityService() {
             })
         }
         rootObj.put("steps", array)
-        getSharedPreferences("touch_loop", MODE_PRIVATE).edit().putString("macro", rootObj.toString()).apply()
+        getSharedPreferences("touch_loop", MODE_PRIVATE).edit().putString("current_macro", rootObj.toString()).apply()
     }
 
+    // ✅ ذخیره ماکرو با نام (برای مدیریت چندین ماکرو)
+    fun saveMacroWithName(name: String): Boolean {
+        if (steps.isEmpty()) return false
+        val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
+        val savedMacrosJson = prefs.getString("saved_macros", "[]") ?: "[]"
+        val savedMacros = JSONArray(savedMacrosJson)
+        
+        val macroObj = JSONObject()
+        macroObj.put("name", name)
+        macroObj.put("step_count", steps.size)
+        val stepsArray = JSONArray()
+        steps.forEach { step ->
+            stepsArray.put(JSONObject().apply {
+                put("kind", step.kind); put("x", step.x); put("y", step.y)
+                put("left", step.left); put("top", step.top); put("right", step.right); put("bottom", step.bottom)
+                put("delay", step.delay); put("duration", step.duration); put("scrollDeltaY", step.scrollDeltaY)
+            })
+        }
+        macroObj.put("steps", stepsArray)
+        savedMacros.put(macroObj)
+        
+        prefs.edit().putString("saved_macros", savedMacros.toString()).apply()
+        return true
+    }
+
+    // ✅ بارگذاری ماکرو با نام
+    fun loadMacroByName(name: String): Boolean {
+        val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
+        val savedMacrosJson = prefs.getString("saved_macros", "[]") ?: "[]"
+        val savedMacros = JSONArray(savedMacrosJson)
+        
+        for (i in 0 until savedMacros.length()) {
+            val macro = savedMacros.optJSONObject(i) ?: continue
+            if (macro.optString("name") == name) {
+                steps.clear()
+                val stepsArray = macro.optJSONArray("steps") ?: return false
+                for (j in 0 until stepsArray.length()) {
+                    val obj = stepsArray.getJSONObject(j)
+                    steps.add(Step(
+                        kind = obj.getString("kind"),
+                        x = obj.optDouble("x", 0.0).toFloat(),
+                        y = obj.optDouble("y", 0.0).toFloat(),
+                        left = obj.optInt("left", 0), top = obj.optInt("top", 0),
+                        right = obj.optInt("right", 0), bottom = obj.optInt("bottom", 0),
+                        delay = obj.optLong("delay", 350L),
+                        duration = obj.optLong("duration", 0L),
+                        scrollDeltaY = obj.optInt("scrollDeltaY", 0)
+                    ))
+                }
+                saveCurrentMacro()
+                return true
+            }
+        }
+        return false
+    }
+
+    // ✅ لیست نام ماکروهای ذخیره‌شده
+    fun getSavedMacros(): List<String> {
+        val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
+        val savedMacrosJson = prefs.getString("saved_macros", "[]") ?: "[]"
+        val savedMacros = JSONArray(savedMacrosJson)
+        val names = mutableListOf<String>()
+        for (i in 0 until savedMacros.length()) {
+            val macro = savedMacros.optJSONObject(i) ?: continue
+            names.add(macro.optString("name", "ماکرو ${i + 1}"))
+        }
+        return names
+    }
+
+    // ✅ حذف ماکرو با نام
+    fun deleteSavedMacro(name: String) {
+        val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
+        val savedMacrosJson = prefs.getString("saved_macros", "[]") ?: "[]"
+        val savedMacros = JSONArray(savedMacrosJson)
+        val newMacros = JSONArray()
+        for (i in 0 until savedMacros.length()) {
+            val macro = savedMacros.optJSONObject(i) ?: continue
+            if (macro.optString("name") != name) {
+                newMacros.put(macro)
+            }
+        }
+        prefs.edit().putString("saved_macros", newMacros.toString()).apply()
+    }
+
+    // ✅ بررسی و اجرای ماکروی در انتظار
+    private fun checkAndRunPendingMacro() {
+        val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
+        if (prefs.getBoolean("run_pending_macro", false)) {
+            val macroName = prefs.getString("pending_macro_name", "") ?: ""
+            prefs.edit().putBoolean("run_pending_macro", false).apply()
+            if (macroName.isNotBlank()) {
+                if (loadMacroByName(macroName)) {
+                    playbackToken++
+                    loopCount = 1
+                    playing = true
+                    playIndex = 0
+                    status?.text = "در حال اجرای $macroName…"
+                    updateExecutionReport()
+                    executionReport?.visibility = View.VISIBLE
+                    showTouchLock()
+                    runNext(playbackToken)
+                } else {
+                    status?.text = "ماکرو یافت نشد: $macroName"
+                }
+            }
+        }
+    }
+
+    // ✅ بارگذاری ماکرو (با پشتیبانی از فرمت قدیمی)
     private fun loadMacro() {
         steps.clear()
-        val raw = getSharedPreferences("touch_loop", MODE_PRIVATE).getString("macro", null) ?: return
+        val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
+        val raw = prefs.getString("current_macro", null) ?: prefs.getString("macro", null) ?: return
         try {
             val array = if (raw.trim().startsWith("{")) {
-                val rootObj = JSONObject(raw); rootObj.optJSONArray("steps") ?: JSONArray()
+                val rootObj = JSONObject(raw)
+                rootObj.optJSONArray("steps") ?: JSONArray()
             } else { JSONArray(raw) }
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
