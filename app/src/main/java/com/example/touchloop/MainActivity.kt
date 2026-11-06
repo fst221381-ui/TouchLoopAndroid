@@ -8,6 +8,7 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
@@ -34,6 +35,7 @@ class MainActivity : Activity() {
     private val muted = Color.rgb(190, 202, 220)
     private val green = Color.rgb(60, 190, 130)
     private val red = Color.rgb(235, 90, 100)
+    private val orange = Color.rgb(245, 158, 66)
 
     private lateinit var root: LinearLayout
     private var adminToken: String? = null
@@ -155,12 +157,40 @@ class MainActivity : Activity() {
         } catch (_: Exception) { isoDate }
     }
 
+    // ✅ باز کردن صفحه رفع محدودیت (Restricted Settings)
+    private fun openRestrictedSettings() {
+        try {
+            val intent = Intent(Settings.ACTION_MANAGE_APP_RESTRICTED_SETTINGS).apply {
+                data = Uri.parse("package:$packageName")
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            try {
+                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+                startActivity(intent)
+            } catch (e2: Exception) {
+                Toast.makeText(this, "لطفاً دستی به تنظیمات برنامه بروید و Allow restricted settings را بزنید", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    // ✅ باز کردن مستقیم صفحه سرویس Accessibility
+    private fun openAccessibilityService() {
+        try {
+            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            startActivity(intent)
+        } catch (e: Exception) {
+            Toast.makeText(this, "خطا در باز کردن تنظیمات", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun showHome() {
         adminToken = null
         newRoot()
         addHeader()
         
-        // ✅ دریافت و نمایش پیام عمومی
         fetchAndShowAnnouncement()
         
         if (prefs.getBoolean("license_active", false)) {
@@ -170,11 +200,30 @@ class MainActivity : Activity() {
                 addText("تا تاریخ: ${formatPersianDateTime(expiry)}", 14f, muted, false, true)
             }
             addSpace(12)
-            addButton("ورود به پنل مدیریت") { showAdminLogin() }
-            addButton("مدیریت ماکروها") { 
-                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                finish()
+            
+            // ✅ دکمه رفع محدودیت (مهم‌ترین دکمه برای اندروید 13+)
+            addButton("🔓 رفع محدودیت دسترسی", color = orange) {
+                openRestrictedSettings()
             }
+            
+            // ✅ دکمه فعال‌سازی سرویس Accessibility
+            addButton("⚙️ فعال‌سازی سرویس Touch Loop") {
+                openAccessibilityService()
+            }
+            
+            addSpace(8)
+            addCard().apply {
+                addText("📋 راهنمای فعال‌سازی:", 16f, cyan, true, true)
+                addText("۱. ابتدا دکمه «🔓 رفع محدودیت» را بزنید.", 13f, white)
+                addText("۲. در صفحه باز شده، روی سه نقطه بالا بزنید و «Allow restricted settings» را انتخاب کنید.", 13f, white)
+                addText("۳. سپس دکمه «⚙️ فعال‌سازی سرویس» را بزنید.", 13f, white)
+                addText("۴. در لیست، «Touch Loop automation» را پیدا کرده و روشن کنید.", 13f, white)
+                addText("۵. در پیام هشدار، «OK» را بزنید.", 13f, white)
+                addText("۶. پنل شناور روی صفحه ظاهر می‌شود! 🎉", 13f, white)
+            }
+            
+            addSpace(12)
+            addButton("ورود به پنل مدیریت") { showAdminLogin() }
         } else {
             addCard().apply {
                 addText("خوش آمدی", 21f, white, true, true)
@@ -188,15 +237,13 @@ class MainActivity : Activity() {
         addText("برای فعال‌سازی برنامه، ورود کاربر و کد فعال‌سازی لازم است.", 13f, muted, false, true)
     }
 
-    // ✅ تابع دریافت پیام عمومی
     private fun fetchAndShowAnnouncement() {
-        runBackground(onError = { /* خطا را نادیده بگیر */ }) {
+        runBackground(onError = { }) {
             val response = postJson(
                 adminEndpoint,
                 JSONObject().apply { put("action", "get_announcement") },
                 useAuthToken = false
             )
-            
             if (response.first in 200..299) {
                 val announcement = response.second.optJSONObject("announcement")
                 if (announcement != null) {
@@ -211,7 +258,6 @@ class MainActivity : Activity() {
         }
     }
 
-    // ✅ نمایش پیام در Dialog
     private fun showAnnouncementDialog(message: String) {
         android.app.AlertDialog.Builder(this)
             .setTitle("📢 پیام مدیر")
@@ -228,7 +274,7 @@ class MainActivity : Activity() {
         val status = addText("کد فعال‌سازی را وارد کن.", 14f, muted, false, true)
         val codeInput = addField("کد فعال‌سازی").apply { contentDescription = "کد فعال‌سازی" }
         addButton("فعال‌سازی") { activateCode(codeInput, status) }
-        addButton("تنظیمات Accessibility") { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+        addButton("تنظیمات Accessibility") { openAccessibilityService() }
         addButton("بازگشت به صفحه اول", color = panelColor) { showHome() }
     }
 
@@ -301,12 +347,7 @@ class MainActivity : Activity() {
                 Toast.makeText(this, "کد کپی شد: $code", Toast.LENGTH_LONG).show()
             }
         }
-        
-        // ✅ دکمه ارسال پیام عمومی
-        addButton("📢 ارسال پیام عمومی") {
-            showCreateAnnouncementDialog()
-        }
-        
+        addButton("📢 ارسال پیام عمومی") { showCreateAnnouncementDialog() }
         addSpace(8)
         addText("فهرست کدها", 20f, white, true, true)
         addSpace(6)
@@ -318,50 +359,29 @@ class MainActivity : Activity() {
         loadAdminCodes(listContainer, listStatus)
     }
 
-    // ✅ Dialog ساخت پیام عمومی
     private fun showCreateAnnouncementDialog() {
         val input = EditText(this).apply {
             hint = "پیام خود را بنویسید..."
             setPadding(dp(16), dp(16), dp(16), dp(16))
         }
-        
         android.app.AlertDialog.Builder(this)
             .setTitle("پیام عمومی جدید")
             .setView(input)
             .setPositiveButton("ارسال") { _, _ ->
                 val message = input.text.toString().trim()
-                if (message.isNotBlank()) {
-                    createAnnouncement(message)
-                }
+                if (message.isNotBlank()) createAnnouncement(message)
             }
             .setNegativeButton("لغو", null)
             .show()
     }
 
-    // ✅ تابع ارسال پیام
     private fun createAnnouncement(message: String) {
         val token = adminToken
-        if (token.isNullOrBlank()) {
-            Toast.makeText(this, "ابتدا وارد شوید", Toast.LENGTH_SHORT).show()
-            return
-        }
-        
-        runBackground(onError = { error ->
-            Toast.makeText(this, "خطا: $error", Toast.LENGTH_LONG).show()
-        }) {
-            val response = postJson(
-                adminEndpoint,
-                JSONObject().apply {
-                    put("action", "create_announcement")
-                    put("message", message)
-                },
-                token
-            )
-            
+        if (token.isNullOrBlank()) { Toast.makeText(this, "ابتدا وارد شوید", Toast.LENGTH_SHORT).show(); return }
+        runBackground(onError = { error -> Toast.makeText(this, "خطا: $error", Toast.LENGTH_LONG).show() }) {
+            val response = postJson(adminEndpoint, JSONObject().apply { put("action", "create_announcement"); put("message", message) }, token)
             if (response.first in 200..299 && response.second.optBoolean("success", false)) {
-                runOnUiThread {
-                    Toast.makeText(this, "پیام با موفقیت ارسال شد", Toast.LENGTH_SHORT).show()
-                }
+                runOnUiThread { Toast.makeText(this, "پیام با موفقیت ارسال شد", Toast.LENGTH_SHORT).show() }
             } else {
                 throw Exception(response.second.optString("message", "خطا در ارسال پیام"))
             }
@@ -438,18 +458,11 @@ class MainActivity : Activity() {
         line("تاریخ ساخت: ${formatPersianDateTime(created)}", muted)
         line("تاریخ فعال‌سازی: ${formatPersianDateTime(activated)}", muted)
         line("تاریخ انقضا: ${formatPersianDateTime(expires)}", if (statusValue == "active") green else muted)
-
-        if (statusValue == "active") {
-            line("زمان باقی‌مانده: ${remaining.coerceAtLeast(0L) / 86400} روز", green)
-        }
-        if (device.isNotBlank() && device != "null") {
-            line("شناسه دستگاه: $device", muted)
-        }
+        if (statusValue == "active") line("زمان باقی‌مانده: ${remaining.coerceAtLeast(0L) / 86400} روز", green)
+        if (device.isNotBlank() && device != "null") line("شناسه دستگاه: $device", muted)
 
         if (codeValue.isNotBlank() && codeValue != "null") {
-            val codeRow = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(8), 0, dp(8))
-            }
+            val codeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(8), 0, dp(8)) }
             val codeText = TextView(this).apply {
                 text = "کد: $codeValue"; textSize = 15f; setTextColor(cyan); setTypeface(null, Typeface.BOLD)
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -472,17 +485,12 @@ class MainActivity : Activity() {
 
         if (statusValue == "blocked" || statusValue == "expired") {
             val deleteBtn = Button(this).apply {
-                text = "🗑️ حذف از لیست"
-                textSize = 13f
-                isAllCaps = false
-                setTextColor(white)
-                background = rounded(red, 10)
-                setPadding(dp(12), dp(8), dp(12), dp(8))
+                text = "🗑️ حذف از لیست"; textSize = 13f; isAllCaps = false; setTextColor(white)
+                background = rounded(red, 10); setPadding(dp(12), dp(8), dp(12), dp(8))
                 setOnClickListener { deleteCode(id, this) }
             }
             card.addView(deleteBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
-        } 
-        else if (id.isNotBlank() && (statusValue == "active" || statusValue == "unused")) {
+        } else if (id.isNotBlank() && (statusValue == "active" || statusValue == "unused")) {
             val actionText = if (statusValue == "blocked") "رفع مسدودی" else "مسدود کردن"
             val actionColor = if (statusValue == "blocked") green else red
             val actionButton = Button(this).apply {
@@ -496,24 +504,13 @@ class MainActivity : Activity() {
     private fun deleteCode(id: String, button: Button) {
         val token = adminToken
         if (token.isNullOrBlank()) { Toast.makeText(this, "ابتدا دوباره وارد پنل مدیر شو.", Toast.LENGTH_SHORT).show(); return }
-        button.isEnabled = false
-        button.text = "در حال حذف..."
-        runBackground(onError = { error ->
-            button.isEnabled = true
-            button.text = "🗑️ حذف از لیست"
-            Toast.makeText(this, "خطا در حذف: $error", Toast.LENGTH_LONG).show()
-        }) {
-            val response = postJson(adminEndpoint, JSONObject().apply {
-                put("action", "delete")
-                put("id", id)
-            }, token)
+        button.isEnabled = false; button.text = "در حال حذف..."
+        runBackground(onError = { error -> button.isEnabled = true; button.text = "🗑️ حذف از لیست"; Toast.makeText(this, "خطا در حذف: $error", Toast.LENGTH_LONG).show() }) {
+            val response = postJson(adminEndpoint, JSONObject().apply { put("action", "delete"); put("id", id) }, token)
             if (response.first !in 200..299 || !response.second.optBoolean("success", false)) {
                 throw Exception(response.second.optString("message", response.second.optString("error", "سرور عملیات حذف را تأیید نکرد.")))
             }
-            runOnUiThread {
-                Toast.makeText(this, "کد با موفقیت حذف شد.", Toast.LENGTH_SHORT).show()
-                showAdminDashboard()
-            }
+            runOnUiThread { Toast.makeText(this, "کد با موفقیت حذف شد.", Toast.LENGTH_SHORT).show(); showAdminDashboard() }
         }
     }
 
@@ -521,20 +518,12 @@ class MainActivity : Activity() {
         val token = adminToken
         if (token.isNullOrBlank()) { Toast.makeText(this, "ابتدا دوباره وارد پنل مدیر شو.", Toast.LENGTH_SHORT).show(); return }
         button.isEnabled = false; button.text = "در حال انجام..."
-        runBackground(onError = { error ->
-            button.isEnabled = true; button.text = if (block) "مسدود کردن" else "رفع مسدودی"
-            Toast.makeText(this, "عملیات ناموفق بود: $error", Toast.LENGTH_LONG).show()
-        }) {
-            val response = postJson(adminEndpoint, JSONObject().apply {
-                put("action", if (block) "block" else "unblock"); put("id", id)
-            }, token)
+        runBackground(onError = { error -> button.isEnabled = true; button.text = if (block) "مسدود کردن" else "رفع مسدودی"; Toast.makeText(this, "عملیات ناموفق بود: $error", Toast.LENGTH_LONG).show() }) {
+            val response = postJson(adminEndpoint, JSONObject().apply { put("action", if (block) "block" else "unblock"); put("id", id) }, token)
             if (response.first !in 200..299 || !response.second.optBoolean("success", false)) {
                 throw Exception(response.second.optString("message", response.second.optString("error", "سرور عملیات را تأیید نکرد.")))
             }
-            runOnUiThread {
-                Toast.makeText(this, if (block) "کد مسدود شد." else "مسدودی کد برداشته شد.", Toast.LENGTH_SHORT).show()
-                showAdminDashboard()
-            }
+            runOnUiThread { Toast.makeText(this, if (block) "کد مسدود شد." else "مسدودی کد برداشته شد.", Toast.LENGTH_SHORT).show(); showAdminDashboard() }
         }
     }
 
@@ -553,12 +542,7 @@ class MainActivity : Activity() {
             val expiresAt = body.optString("expires_at", "")
             val remaining = body.optLong("remaining_seconds", 0L)
             if (expiresAt.isBlank() || remaining <= 0L) { throw Exception("پاسخ سرور ناقص است.") }
-            prefs.edit()
-                .putBoolean("license_active", true)
-                .putString("license_device_id", deviceId)
-                .putString("license_expires_at", expiresAt)
-                .putLong("license_remaining_seconds", remaining)
-                .apply()
+            prefs.edit().putBoolean("license_active", true).putString("license_device_id", deviceId).putString("license_expires_at", expiresAt).putLong("license_remaining_seconds", remaining).apply()
             runOnUiThread {
                 status.text = "فعال‌سازی موفق بود.\nزمان باقی‌مانده: ${remaining / 86400} روز"
                 status.setTextColor(green)
@@ -589,9 +573,6 @@ class MainActivity : Activity() {
     }
 
     private fun runBackground(onError: (String) -> Unit, work: () -> Unit) {
-        Thread {
-            try { work() }
-            catch (e: Exception) { val message = e.message ?: "خطای نامشخص"; runOnUiThread { onError(message) } }
-        }.start()
+        Thread { try { work() } catch (e: Exception) { val message = e.message ?: "خطای نامشخص"; runOnUiThread { onError(message) } } }.start()
     }
 }
