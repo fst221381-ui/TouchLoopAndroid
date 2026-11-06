@@ -50,7 +50,7 @@ class MacroAccessibilityService : AccessibilityService() {
     private var playing = false
     private var playbackToken = 0
     private var playIndex = 0
-    private var loopCount = 0 // شمارنده تکرار ماکرو
+    private var loopCount = 0
     private var lastEventAt = 0L
 
     private var panel: View? = null
@@ -58,7 +58,7 @@ class MacroAccessibilityService : AccessibilityService() {
     private var panelParams: WindowManager.LayoutParams? = null
     private var bubbleParams: WindowManager.LayoutParams? = null
     private var panelCollapsed = false
-    private var touchBlocker: View? = null // لایه مسدودکننده لمس
+    private var touchBlocker: View? = null
 
     private var panelWidthDp = 220
     private var panelHeightDp = 320
@@ -300,7 +300,6 @@ class MacroAccessibilityService : AccessibilityService() {
         root.addView(header)
         root.addView(scrollView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        // ✅ دستگیره تغییر اندازه اصلاح‌شده (بدون بازسازی پنل)
         val resizeHandle = TextView(this).apply {
             text = "⋮⋮"
             textSize = 14f * scale
@@ -326,7 +325,7 @@ class MacroAccessibilityService : AccessibilityService() {
                     val dy = ((event.rawY - data[1]) / resources.displayMetrics.density).toInt()
                     panelWidthDp = (data[2].toInt() + dx).coerceIn(minPanelWidthDp, 450)
                     panelHeightDp = (data[3].toInt() + dy).coerceIn(minPanelHeightDp, 800)
-                    updatePanelSize() // فقط ابعاد را آپدیت می‌کند، پنل را بازسازی نمی‌کند
+                    updatePanelSize()
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { resizeData = null; true }
@@ -383,7 +382,6 @@ class MacroAccessibilityService : AccessibilityService() {
             }
             stepView.addView(stepText)
 
-            // ✅ دکمه‌های کوچک و کنار هم
             val actionsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
             
             if (index > 0) {
@@ -407,7 +405,6 @@ class MacroAccessibilityService : AccessibilityService() {
             container.addView(stepView)
         }
 
-        // ✅ دکمه افزودن مرحله جدید
         container.addView(Button(this).apply {
             text = "➕ افزودن مرحله جدید"; textSize = 14f; setPadding(dp(16), dp(12), dp(16), dp(12))
             setOnClickListener { 
@@ -461,18 +458,16 @@ class MacroAccessibilityService : AccessibilityService() {
             .putInt("panel_width_dp", panelWidthDp).putInt("panel_height_dp", panelHeightDp).apply()
     }
 
-    // ✅ لایه مسدودکننده لمس حین اجرای ماکرو
     private fun showTouchBlocker() {
         if (touchBlocker != null) return
         touchBlocker = View(this).apply {
-            setBackgroundColor(0x00000000) // کاملاً شفاف
-            // تمام لمس‌ها را مصرف می‌کند تا با ماکرو تداخل نداشته باشند
+            setBackgroundColor(0x00000000)
             setOnTouchListener { _, _ -> true }
         }
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, // اجازه می‌دهد پنل شناور همچنان کار کند
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
         )
         try { wm.addView(touchBlocker, params) } catch (_: Exception) {}
@@ -530,7 +525,7 @@ class MacroAccessibilityService : AccessibilityService() {
         if (!playing || session != playbackToken || steps.isEmpty()) return
         
         if (playIndex >= steps.size) {
-            loopCount++ // ✅ افزایش شمارنده تکرار
+            loopCount++
             playIndex = 0
             val gap = (100L / playbackSpeed).toLong().coerceIn(20L, 100L)
             handler.postDelayed({ if (hasValidLicense() && playing && session == playbackToken) runNext(session) }, gap)
@@ -751,14 +746,13 @@ class MacroAccessibilityService : AccessibilityService() {
         }
     }
 
-    // ✅ اصلاح باگ توقف: فقط وضعیت را ریست می‌کند، مراحل را حذف نمی‌کند
     private fun stopPlayback() { 
         playing = false
         playbackToken++
         playIndex = 0
         loopCount = 0
         executionReport?.visibility = View.GONE
-        hideTouchBlocker() // حذف لایه مسدودکننده
+        hideTouchBlocker()
     }
 
     private fun stopAll() {
