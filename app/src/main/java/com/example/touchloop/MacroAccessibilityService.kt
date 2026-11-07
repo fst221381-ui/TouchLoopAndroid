@@ -9,6 +9,7 @@ import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.Settings
 import android.view.Gravity
 import android.view.MotionEvent
@@ -83,10 +84,12 @@ class MacroAccessibilityService : AccessibilityService() {
     private val minPanelWidthDp = 140
     private val minPanelHeightDp = 180
 
-    private val maxStepRetries = 8
+    // ✅ سقف تلاش بالاتر: عملاً هرگز مرحله رد نمی‌شود
+    private val maxStepRetries = 20
     private var watchdogRunnable: Runnable? = null
-    // ✅ شمارنده نسل: جلوگیری از اجرای مواهی ناشی از callback های دیررس
     private var currentAttempt = 0L
+
+    private val powerManager: PowerManager? by lazy { getSystemService(POWER_SERVICE) as? PowerManager }
 
     private val licenseDateFormatter = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).apply {
         timeZone = java.util.TimeZone.getTimeZone("UTC")
@@ -98,6 +101,8 @@ class MacroAccessibilityService : AccessibilityService() {
 
     private var lastOnlineCheck = 0L
     private val checkInterval = 2 * 60 * 1000L
+
+    private fun isScreenOn(): Boolean = powerManager?.isInteractive ?: true
 
     private fun hasValidLicense(): Boolean {
         if (isLicenseBlocked) return false
@@ -255,6 +260,26 @@ class MacroAccessibilityService : AccessibilityService() {
     private fun scaleFactor(): Float = (panelWidthDp / 220f).coerceIn(0.6f, 1.4f)
     private fun scaledDp(value: Int): Int = dp((value * scaleFactor()).toInt().coerceAtLeast(1))
 
+    // ✅ روشن‌نگه‌داشتن صفحه در طول پخش (جلوگیری از لغو ژست‌ها بر اثر خواب دستگاه)
+    private fun updateKeepScreenOnFlag(on: Boolean) {
+        panelParams?.let { p ->
+            val newFlags = if (on) p.flags or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+            else p.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON.inv()
+            if (newFlags != p.flags) {
+                p.flags = newFlags
+                panel?.let { try { wm.updateViewLayout(it, p) } catch (_: Exception) {} }
+            }
+        }
+        bubbleParams?.let { p ->
+            val newFlags = if (on) p.flags or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+            else p.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON.inv()
+            if (newFlags != p.flags) {
+                p.flags = newFlags
+                bubble?.let { try { wm.updateViewLayout(it, p) } catch (_: Exception) {} }
+            }
+        }
+    }
+
     private fun showPanel() {
         if (!hasValidLicense() || panel != null) return
         val scale = scaleFactor()
@@ -375,12 +400,12 @@ class MacroAccessibilityService : AccessibilityService() {
                 updateExecutionReport()
                 executionReport?.visibility = View.VISIBLE
                 temporarilyUnlockForPlayback()
+                updateKeepScreenOnFlag(true) // ✅ صفحه در طول پخش روشن می‌ماند
                 runNext(playbackToken)
             }
         })
         contentContainer.addView(button("✎ ویرایش") {
             if (!hasValidLicense()) return@button
-            // ✅ جلوگیری از تغییر مراحل حین پخش
             if (playing) { status?.text = "ابتدا پخش را متوقف کن"; return@button }
             if (steps.isEmpty()) status?.text = "ماکرویی برای ویرایش نیست" else showMacroEditor()
         })
@@ -468,7 +493,7 @@ class MacroAccessibilityService : AccessibilityService() {
 
         panel = root
         panelParams = params
-        try { wm.addView(root, params); updateSpeedLabel() } catch (_: Exception) { panel = null; panelParams = null }
+        try { wm.addView(root, params); updateSpeedLabel(); updateKeepScreenOnFlag(playing) } catch (_: Exception) { panel = null; panelParams = null }
     }
 
     private fun updateExecutionReport() {
@@ -481,7 +506,7 @@ class MacroAccessibilityService : AccessibilityService() {
     }
 
     // =====================================================================
-    // موتور پخش ضدباگ: تک‌زنجیره + تلاش مجدد + واچ‌داگ + شمارنده نسل
+    // موتور پخش: تک‌زنجیره + توقف هوشمند وقتی صفحه خاموش است + تلاش مجدد + واچ‌داگ امن
     // =====================================================================
 
     private fun runNext(session: Int) {
@@ -515,6 +540,14 @@ class MacroAccessibilityService : AccessibilityService() {
         handler.postDelayed({
             if (!hasValidLicense()) { stopPlayback(); return@postDelayed }
             if (!playing || session != playbackToken) return@postDelayed
+            // ✅ اگر صفحه خاموش است، به‌جای سوزاندن تلاش‌ها، ماکرو موقتاً متوقف می‌ماند
+            if (!isScreenOn()) {
+                status?.text = "صفحه خاموش است؛ منتظر روشن‌شدن…"
+                handler.postDelayed({
+                    if (playing && session == playbackToken) runStep(index, session, retry)
+                }, 1000L)
+                return@postDelayed
+            }
             when (step.kind) {
                 "BACK" -> {
                     performGlobalAction(GLOBAL_ACTION_BACK)
@@ -592,15 +625,15 @@ class MacroAccessibilityService : AccessibilityService() {
             .addStroke(GestureDescription.StrokeDescription(path, 0, gestureDuration))
             .build()
 
-        // ✅ نسل جدید ثبت می‌شود؛ callback های قدیمی بی‌اثر می‌شوند
         currentAttempt++
         val attempt = currentAttempt
 
-        armWatchdog(step, index, session, retry, attempt, gestureDuration + 5000L)
+        // ✅ حاشیه امن ۱۵ ثانیه: واچ‌داگ دیگر هرگز زودگیر نمی‌شود
+        armWatchdog(step, index, session, retry, attempt, gestureDuration + 15000L)
 
         val accepted = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
-                if (attempt != currentAttempt) return // ✅ callback دیررس نادیده گرفته می‌شود
+                if (attempt != currentAttempt) return
                 disarmWatchdog()
                 if (!playing || session != playbackToken) return
                 handler.postDelayed({
@@ -609,13 +642,15 @@ class MacroAccessibilityService : AccessibilityService() {
             }
 
             override fun onCancelled(gestureDescription: GestureDescription?) {
-                if (attempt != currentAttempt) return // ✅ callback دیررس نادیده گرفته می‌شود
+                if (attempt != currentAttempt) return
                 disarmWatchdog()
                 if (!playing || session != playbackToken) return
                 if (retry < maxStepRetries) {
+                    val backoff = if (retry < 8) 400L else 1000L
+                    status?.text = "تداخل لمس؛ تلاش مجدد ${retry + 1}"
                     handler.postDelayed({
                         if (playing && session == playbackToken) dispatchStep(step, index, session, retry + 1)
-                    }, 400L)
+                    }, backoff)
                 } else {
                     handler.postDelayed({
                         if (playing && session == playbackToken) runStep(index + 1, session, 0)
@@ -628,9 +663,10 @@ class MacroAccessibilityService : AccessibilityService() {
             if (attempt == currentAttempt) {
                 disarmWatchdog()
                 if (retry < maxStepRetries) {
+                    val backoff = if (retry < 8) 300L else 1000L
                     handler.postDelayed({
                         if (playing && session == playbackToken) dispatchStep(step, index, session, retry + 1)
-                    }, 300L)
+                    }, backoff)
                 } else {
                     handler.postDelayed({
                         if (playing && session == playbackToken) runStep(index + 1, session, 0)
@@ -645,12 +681,13 @@ class MacroAccessibilityService : AccessibilityService() {
         val r = Runnable {
             if (!playing || session != playbackToken) return@Runnable
             if (attempt != currentAttempt) return@Runnable
-            if (retry < maxStepRetries) {
-                dispatchStep(step, index, session, retry + 1)
-            } else {
-                currentAttempt++ // ✅ باطل‌کردن callback های این تلاش
-                runStep(index + 1, session, 0)
-            }
+            currentAttempt++ // باطل‌کردن callback های دیررس
+            // ✅ مکث تثبیت ۳۰۰ms قبل از ارسال مجدد
+            handler.postDelayed({
+                if (!playing || session != playbackToken) return@postDelayed
+                if (retry < maxStepRetries) dispatchStep(step, index, session, retry + 1)
+                else runStep(index + 1, session, 0)
+            }, 300L)
         }
         watchdogRunnable = r
         handler.postDelayed(r, timeout)
@@ -817,7 +854,7 @@ class MacroAccessibilityService : AccessibilityService() {
         val params = panelParams ?: return
         params.width = dp(panelWidthDp)
         params.height = dp(panelHeightDp)
-        try { panel?.let { wm.updateViewLayout(it, params) } } catch (_: Exception) {}
+        try { panel?.let { wm.updateViewLayout(it, params) } catch (_: Exception) {} }
         getSharedPreferences("touch_loop", MODE_PRIVATE).edit()
             .putInt("panel_width_dp", panelWidthDp).putInt("panel_height_dp", panelHeightDp).apply()
     }
@@ -959,7 +996,7 @@ class MacroAccessibilityService : AccessibilityService() {
             }
         }
         bubble = bubbleView
-        try { wm.addView(bubbleView, params) } catch (_: Exception) { bubble = null; panelCollapsed = false; showPanel() }
+        try { wm.addView(bubbleView, params); updateKeepScreenOnFlag(playing) } catch (_: Exception) { bubble = null; panelCollapsed = false; showPanel() }
     }
 
     private fun expandFromBubble() {
@@ -970,19 +1007,19 @@ class MacroAccessibilityService : AccessibilityService() {
         val params = panelParams
         if (params != null && oldParams != null) {
             params.x = oldParams.x; params.y = oldParams.y
-            try { panel?.let { wm.updateViewLayout(it, params) } } catch (_: Exception) {}
-        }
+            try { panel?.let { wm.updateViewLayout(it, params) } } catch (_: Exception) {} }
     }
 
     private fun stopPlayback() {
         val wasPlaying = playing
         playing = false
         playbackToken++
-        currentAttempt++ // ✅ باطل‌کردن تمام callback های در حال پرواز
+        currentAttempt++
         playIndex = 0
         loopCount = 0
         executionReport?.visibility = View.GONE
         disarmWatchdog()
+        updateKeepScreenOnFlag(false) // ✅ برگشت به حالت عادی
         if (wasPlaying) {
             handler.postDelayed({ restoreLockAfterPlayback() }, 300L)
         }
