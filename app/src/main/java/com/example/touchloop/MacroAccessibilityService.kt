@@ -84,7 +84,6 @@ class MacroAccessibilityService : AccessibilityService() {
     private val minPanelWidthDp = 140
     private val minPanelHeightDp = 180
 
-    // ✅ سقف تلاش بالاتر: عملاً هرگز مرحله رد نمی‌شود
     private val maxStepRetries = 20
     private var watchdogRunnable: Runnable? = null
     private var currentAttempt = 0L
@@ -260,14 +259,13 @@ class MacroAccessibilityService : AccessibilityService() {
     private fun scaleFactor(): Float = (panelWidthDp / 220f).coerceIn(0.6f, 1.4f)
     private fun scaledDp(value: Int): Int = dp((value * scaleFactor()).toInt().coerceAtLeast(1))
 
-    // ✅ روشن‌نگه‌داشتن صفحه در طول پخش (جلوگیری از لغو ژست‌ها بر اثر خواب دستگاه)
     private fun updateKeepScreenOnFlag(on: Boolean) {
         panelParams?.let { p ->
             val newFlags = if (on) p.flags or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
             else p.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON.inv()
             if (newFlags != p.flags) {
                 p.flags = newFlags
-                panel?.let { try { wm.updateViewLayout(it, p) } catch (_: Exception) {} }
+                panel?.let { try { wm.updateViewLayout(it, p) } catch (e: Exception) { } }
             }
         }
         bubbleParams?.let { p ->
@@ -275,7 +273,7 @@ class MacroAccessibilityService : AccessibilityService() {
             else p.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON.inv()
             if (newFlags != p.flags) {
                 p.flags = newFlags
-                bubble?.let { try { wm.updateViewLayout(it, p) } catch (_: Exception) {} }
+                bubble?.let { try { wm.updateViewLayout(it, p) } catch (e: Exception) { } }
             }
         }
     }
@@ -353,7 +351,7 @@ class MacroAccessibilityService : AccessibilityService() {
                     val screenHeight = resources.displayMetrics.heightPixels
                     params.x = (data[2].toInt() + dx).coerceIn(0, (screenWidth - params.width).coerceAtLeast(0))
                     params.y = (data[3].toInt() + dy).coerceIn(0, (screenHeight - dp(60)).coerceAtLeast(0))
-                    try { wm.updateViewLayout(root, params) } catch (_: Exception) {}
+                    try { wm.updateViewLayout(root, params) } catch (e: Exception) { }
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { panelDragData = null; true }
@@ -400,7 +398,7 @@ class MacroAccessibilityService : AccessibilityService() {
                 updateExecutionReport()
                 executionReport?.visibility = View.VISIBLE
                 temporarilyUnlockForPlayback()
-                updateKeepScreenOnFlag(true) // ✅ صفحه در طول پخش روشن می‌ماند
+                updateKeepScreenOnFlag(true)
                 runNext(playbackToken)
             }
         })
@@ -493,7 +491,7 @@ class MacroAccessibilityService : AccessibilityService() {
 
         panel = root
         panelParams = params
-        try { wm.addView(root, params); updateSpeedLabel(); updateKeepScreenOnFlag(playing) } catch (_: Exception) { panel = null; panelParams = null }
+        try { wm.addView(root, params); updateSpeedLabel(); updateKeepScreenOnFlag(playing) } catch (e: Exception) { panel = null; panelParams = null }
     }
 
     private fun updateExecutionReport() {
@@ -504,10 +502,6 @@ class MacroAccessibilityService : AccessibilityService() {
         val stepType = when (step?.kind) { "TAP" -> "کلیک"; "SCROLL" -> "اسکرول"; "BACK" -> "بازگشت"; else -> "نامشخص" }
         executionReport?.text = "دور $loopCount • مرحله $current از $total ($stepType)"
     }
-
-    // =====================================================================
-    // موتور پخش: تک‌زنجیره + توقف هوشمند وقتی صفحه خاموش است + تلاش مجدد + واچ‌داگ امن
-    // =====================================================================
 
     private fun runNext(session: Int) {
         runStep(playIndex, session, 0)
@@ -540,7 +534,7 @@ class MacroAccessibilityService : AccessibilityService() {
         handler.postDelayed({
             if (!hasValidLicense()) { stopPlayback(); return@postDelayed }
             if (!playing || session != playbackToken) return@postDelayed
-            // ✅ اگر صفحه خاموش است، به‌جای سوزاندن تلاش‌ها، ماکرو موقتاً متوقف می‌ماند
+            
             if (!isScreenOn()) {
                 status?.text = "صفحه خاموش است؛ منتظر روشن‌شدن…"
                 handler.postDelayed({
@@ -548,6 +542,7 @@ class MacroAccessibilityService : AccessibilityService() {
                 }, 1000L)
                 return@postDelayed
             }
+            
             when (step.kind) {
                 "BACK" -> {
                     performGlobalAction(GLOBAL_ACTION_BACK)
@@ -628,7 +623,6 @@ class MacroAccessibilityService : AccessibilityService() {
         currentAttempt++
         val attempt = currentAttempt
 
-        // ✅ حاشیه امن ۱۵ ثانیه: واچ‌داگ دیگر هرگز زودگیر نمی‌شود
         armWatchdog(step, index, session, retry, attempt, gestureDuration + 15000L)
 
         val accepted = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
@@ -681,8 +675,7 @@ class MacroAccessibilityService : AccessibilityService() {
         val r = Runnable {
             if (!playing || session != playbackToken) return@Runnable
             if (attempt != currentAttempt) return@Runnable
-            currentAttempt++ // باطل‌کردن callback های دیررس
-            // ✅ مکث تثبیت ۳۰۰ms قبل از ارسال مجدد
+            currentAttempt++
             handler.postDelayed({
                 if (!playing || session != playbackToken) return@postDelayed
                 if (retry < maxStepRetries) dispatchStep(step, index, session, retry + 1)
@@ -697,8 +690,6 @@ class MacroAccessibilityService : AccessibilityService() {
         watchdogRunnable?.let { handler.removeCallbacks(it) }
         watchdogRunnable = null
     }
-
-    // =====================================================================
 
     private fun dispatchTap(x: Float, y: Float, onDone: (() -> Unit)? = null) {
         if (!hasValidLicense()) return
@@ -854,7 +845,9 @@ class MacroAccessibilityService : AccessibilityService() {
         val params = panelParams ?: return
         params.width = dp(panelWidthDp)
         params.height = dp(panelHeightDp)
-        try { panel?.let { wm.updateViewLayout(it, params) } catch (_: Exception) {} }
+        try { 
+            panel?.let { wm.updateViewLayout(it, params) } 
+        } catch (e: Exception) { }
         getSharedPreferences("touch_loop", MODE_PRIVATE).edit()
             .putInt("panel_width_dp", panelWidthDp).putInt("panel_height_dp", panelHeightDp).apply()
     }
@@ -888,12 +881,12 @@ class MacroAccessibilityService : AccessibilityService() {
                 wm.removeView(currentBubble)
                 wm.addView(currentBubble, currentBubbleParams)
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) { }
     }
 
     private fun hideTouchLock() {
         isCurrentlyLocked = false
-        touchLockOverlay?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+        touchLockOverlay?.let { try { wm.removeView(it) } catch (e: Exception) { } }
         touchLockOverlay = null
     }
 
@@ -943,11 +936,11 @@ class MacroAccessibilityService : AccessibilityService() {
         ).apply { gravity = Gravity.TOP or Gravity.START }
         pointPicker = root
         try { wm.addView(root, params); status?.text = "محل کلیک را انتخاب کن" }
-        catch (_: Exception) { pointPicker = null; status?.text = "انتخاب نقطه باز نشد" }
+        catch (e: Exception) { pointPicker = null; status?.text = "انتخاب نقطه باز نشد" }
     }
 
     private fun removePointPicker() {
-        pointPicker?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+        pointPicker?.let { try { wm.removeView(it) } catch (e: Exception) { } }
         pointPicker = null
     }
 
@@ -961,12 +954,16 @@ class MacroAccessibilityService : AccessibilityService() {
     private fun collapseToBubble() {
         if (!hasValidLicense() || panel == null || panelCollapsed) return
         val oldParams = panelParams
-        panel?.let { try { wm.removeView(it) } catch (_: Exception) {} }
-        panel = null; panelCollapsed = true
+        panel?.let { try { wm.removeView(it) } catch (e: Exception) { } }
+        panel = null
+        panelCollapsed = true
         val size = dp(52)
         val bubbleView = TextView(this).apply {
-            text = "TL"; textSize = 16f; gravity = Gravity.CENTER
-            setTextColor(0xFFFFFFFF.toInt()); setBackgroundColor(0xFF4258A8.toInt())
+            text = "TL"
+            textSize = 16f
+            gravity = Gravity.CENTER
+            setTextColor(0xFFFFFFFF.toInt())
+            setBackgroundColor(0xFF4258A8.toInt())
             contentDescription = "Touch Loop؛ لمس برای بازکردن پنل"
         }
         val params = WindowManager.LayoutParams(
@@ -987,7 +984,7 @@ class MacroAccessibilityService : AccessibilityService() {
                     if (moved) {
                         params.x = (initialX + dx).coerceIn(0, (resources.displayMetrics.widthPixels - size).coerceAtLeast(0))
                         params.y = (initialY + dy).coerceIn(0, (resources.displayMetrics.heightPixels - size).coerceAtLeast(0))
-                        try { wm.updateViewLayout(view, params) } catch (_: Exception) {}
+                        try { wm.updateViewLayout(view, params) } catch (e: Exception) { }
                     }
                     true
                 }
@@ -996,18 +993,38 @@ class MacroAccessibilityService : AccessibilityService() {
             }
         }
         bubble = bubbleView
-        try { wm.addView(bubbleView, params); updateKeepScreenOnFlag(playing) } catch (_: Exception) { bubble = null; panelCollapsed = false; showPanel() }
+        try { 
+            wm.addView(bubbleView, params)
+            updateKeepScreenOnFlag(playing) 
+        } catch (e: Exception) { 
+            bubble = null
+            panelCollapsed = false
+            showPanel() 
+        }
     }
 
     private fun expandFromBubble() {
         if (!hasValidLicense()) { removePanel(); return }
-        bubble?.let { try { wm.removeView(it) } catch (_: Exception) {} }
-        val oldParams = bubbleParams; bubble = null; bubbleParams = null; panelCollapsed = false
+        bubble?.let { 
+            try { 
+                wm.removeView(it) 
+            } catch (e: Exception) { } 
+        }
+        val oldParams = bubbleParams
+        bubble = null
+        bubbleParams = null
+        panelCollapsed = false
         showPanel()
         val params = panelParams
         if (params != null && oldParams != null) {
-            params.x = oldParams.x; params.y = oldParams.y
-            try { panel?.let { wm.updateViewLayout(it, params) } } catch (_: Exception) {} }
+            params.x = oldParams.x
+            params.y = oldParams.y
+            try { 
+                panel?.let { 
+                    wm.updateViewLayout(it, params) 
+                }
+            } catch (e: Exception) { }
+        }
     }
 
     private fun stopPlayback() {
@@ -1019,7 +1036,7 @@ class MacroAccessibilityService : AccessibilityService() {
         loopCount = 0
         executionReport?.visibility = View.GONE
         disarmWatchdog()
-        updateKeepScreenOnFlag(false) // ✅ برگشت به حالت عادی
+        updateKeepScreenOnFlag(false)
         if (wasPlaying) {
             handler.postDelayed({ restoreLockAfterPlayback() }, 300L)
         }
@@ -1064,17 +1081,35 @@ class MacroAccessibilityService : AccessibilityService() {
                     scrollDeltaY = obj.optInt("scrollDeltaY", 0)
                 ))
             }
-        } catch (_: Exception) { steps.clear() }
+        } catch (e: Exception) { steps.clear() }
     }
 
     private fun removePanel() {
-        recording = false; stopPlayback(); handler.removeCallbacks(flushScrollRunnable); pendingScroll = null
+        recording = false
+        stopPlayback()
+        handler.removeCallbacks(flushScrollRunnable)
+        pendingScroll = null
         removePointPicker()
         hideTouchLock()
-        panel?.let { try { wm.removeView(it) } catch (_: Exception) {} }
-        bubble?.let { try { wm.removeView(it) } catch (_: Exception) {} }
-        panel = null; bubble = null; panelParams = null; bubbleParams = null
-        panelCollapsed = false; status = null; speedLabel = null; executionReport = null; lockButton = null
+        panel?.let { 
+            try { 
+                wm.removeView(it) 
+            } catch (e: Exception) { } 
+        }
+        bubble?.let { 
+            try { 
+                wm.removeView(it) 
+            } catch (e: Exception) { } 
+        }
+        panel = null
+        bubble = null
+        panelParams = null
+        bubbleParams = null
+        panelCollapsed = false
+        status = null
+        speedLabel = null
+        executionReport = null
+        lockButton = null
     }
 
     override fun onDestroy() { removePanel(); super.onDestroy() }
