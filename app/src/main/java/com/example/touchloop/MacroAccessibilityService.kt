@@ -88,6 +88,33 @@ class MacroAccessibilityService : AccessibilityService() {
     private var watchdogRunnable: Runnable? = null
     private var currentAttempt = 0L
 
+    // ---------- کنترل هماهنگی در پخش ----------
+    private var expectedPkg: String? = null
+    private var pkgMismatch = 0
+    private var lastUiChangeAt = 0L
+
+    // حداقل زمان انتظار بعد از هر عمل (ثابت و مستقل از سرعت)
+    private val tapSettleMin = 300L
+    private val scrollSettleMin = 500L
+    private val backSettleMin = 900L
+    // اگر این مدت هیچ تغییر UI نیامد، صفحه آرام حساب می‌شود
+    private val settleQuiet = 150L
+    // سقف انتظار برای آرام شدن صفحه
+    private val settleMax = 2500L
+    // مکث بین دو دور
+    private val loopGap = 1000L
+
+    // ---------- تنظیمات اسکرول (ثابت، مستقل از سرعت پخش) ----------
+    // مدت حرکت انگشت
+    private val scrollMoveDuration = 450L
+    // مکث انگشت در انتهای حرکت (برای جلوگیری از fling؛ اندروید ۸+)
+    private val scrollHoldDuration = 150L
+    // ضریب مسافت نسبت به مقدار ضبط‌شده (۱.۰ = همان مقدار ضبط‌شده)
+    private val scrollDistanceFactor = 1.0f
+    // حداقل و حداکثر مسافت نسبت به ارتفاع ناحیه‌ی امن
+    private val scrollMinFraction = 0.45f
+    private val scrollMaxFraction = 0.90f
+
     private val powerManager: PowerManager? by lazy { getSystemService(POWER_SERVICE) as? PowerManager }
 
     private val licenseDateFormatter = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).apply {
@@ -163,7 +190,7 @@ class MacroAccessibilityService : AccessibilityService() {
                     }
                 }
                 connection.disconnect()
-            } catch (e: Exception) { }
+            } catch (_: Exception) { }
         }.start()
     }
 
@@ -195,7 +222,19 @@ class MacroAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (!hasValidLicense()) { recording = false; stopPlayback(); return }
-        if (event == null || !recording || playing) return
+        if (event == null) return
+
+        // در حال پخش: فقط تغییرات UI برنامه‌ی هدف را ثبت کن (برای منتظر ماندن تا صفحه آرام شود)
+        if (playing) {
+            val t = event.eventType
+            if ((t == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED || t == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) &&
+                event.packageName?.toString() != packageName) {
+                lastUiChangeAt = System.currentTimeMillis()
+            }
+            return
+        }
+
+        if (!recording) return
         if (System.currentTimeMillis() < ignoreEventsUntil) return
         if (event.packageName?.toString() == packageName) return
         if (event.eventType != AccessibilityEvent.TYPE_VIEW_CLICKED && event.eventType != AccessibilityEvent.TYPE_VIEW_SCROLLED) return
@@ -265,7 +304,7 @@ class MacroAccessibilityService : AccessibilityService() {
             else p.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON.inv()
             if (newFlags != p.flags) {
                 p.flags = newFlags
-                panel?.let { try { wm.updateViewLayout(it, p) } catch (e: Exception) { } }
+                panel?.let { try { wm.updateViewLayout(it, p) } catch (_: Exception) { } }
             }
         }
         bubbleParams?.let { p ->
@@ -273,7 +312,7 @@ class MacroAccessibilityService : AccessibilityService() {
             else p.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON.inv()
             if (newFlags != p.flags) {
                 p.flags = newFlags
-                bubble?.let { try { wm.updateViewLayout(it, p) } catch (e: Exception) { } }
+                bubble?.let { try { wm.updateViewLayout(it, p) } catch (_: Exception) { } }
             }
         }
     }
@@ -351,7 +390,7 @@ class MacroAccessibilityService : AccessibilityService() {
                     val screenHeight = resources.displayMetrics.heightPixels
                     params.x = (data[2].toInt() + dx).coerceIn(0, (screenWidth - params.width).coerceAtLeast(0))
                     params.y = (data[3].toInt() + dy).coerceIn(0, (screenHeight - dp(60)).coerceAtLeast(0))
-                    try { wm.updateViewLayout(root, params) } catch (e: Exception) { }
+                    try { wm.updateViewLayout(root, params) } catch (_: Exception) { }
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { panelDragData = null; true }
@@ -394,6 +433,9 @@ class MacroAccessibilityService : AccessibilityService() {
             if (steps.isEmpty()) { status?.text = "ابتدا ماکرو ضبط کن" }
             else {
                 playbackToken++; loopCount = 1; playing = true; playIndex = 0
+                expectedPkg = currentPackage()
+                pkgMismatch = 0
+                lastUiChangeAt = System.currentTimeMillis()
                 status?.text = "در حال پخش…"
                 updateExecutionReport()
                 executionReport?.visibility = View.VISIBLE
@@ -491,7 +533,7 @@ class MacroAccessibilityService : AccessibilityService() {
 
         panel = root
         panelParams = params
-        try { wm.addView(root, params); updateSpeedLabel(); updateKeepScreenOnFlag(playing) } catch (e: Exception) { panel = null; panelParams = null }
+        try { wm.addView(root, params); updateSpeedLabel(); updateKeepScreenOnFlag(playing) } catch (_: Exception) { panel = null; panelParams = null }
     }
 
     private fun updateExecutionReport() {
@@ -501,6 +543,61 @@ class MacroAccessibilityService : AccessibilityService() {
         val step = steps.getOrNull(playIndex)
         val stepType = when (step?.kind) { "TAP" -> "کلیک"; "SCROLL" -> "اسکرول"; "BACK" -> "بازگشت"; else -> "نامشخص" }
         executionReport?.text = "دور $loopCount • مرحله $current از $total ($stepType)"
+    }
+
+    // ---------- توابع کمکی هماهنگی ----------
+
+    private fun currentPackage(): String? {
+        val root = rootInActiveWindow ?: return null
+        return try { root.packageName?.toString() } finally { root.recycle() }
+    }
+
+    /** پخش را متوقف می‌کند و پیام می‌دهد (به‌جای رد شدن از مرحله) */
+    private fun failPlayback(message: String) {
+        stopPlayback()
+        status?.text = message
+    }
+
+    /**
+     * منتظر می‌ماند تا حداقل [minWait] بگذرد و صفحه آرام شود
+     * (بدون تغییر UI به مدت settleQuiet)، با سقف settleMax.
+     */
+    private fun waitForSettle(session: Int, minWait: Long, onReady: () -> Unit) {
+        val startedAt = System.currentTimeMillis()
+        val poll = object : Runnable {
+            override fun run() {
+                if (!playing || session != playbackToken) return
+                val now = System.currentTimeMillis()
+                val elapsed = now - startedAt
+                val idle = now - lastUiChangeAt
+                if (elapsed >= settleMax || (elapsed >= minWait && idle >= settleQuiet)) {
+                    onReady()
+                } else {
+                    handler.postDelayed(this, 40L)
+                }
+            }
+        }
+        handler.postDelayed(poll, 40L)
+    }
+
+    /** بعد از اجرای هر مرحله: انتظار برای آرام شدن صفحه، سپس مرحله‌ی بعد */
+    private fun afterAction(kind: String, index: Int, session: Int) {
+        lastUiChangeAt = System.currentTimeMillis()
+        val minWait = when (kind) {
+            "SCROLL" -> scrollSettleMin
+            "BACK" -> backSettleMin
+            else -> tapSettleMin
+        }
+        waitForSettle(session, minWait) {
+            if (hasValidLicense() && playing && session == playbackToken) runStep(index + 1, session, 0)
+        }
+    }
+
+    private fun finishStep(kind: String, index: Int, session: Int, attempt: Long) {
+        if (attempt != currentAttempt) return
+        disarmWatchdog()
+        if (!playing || session != playbackToken) return
+        afterAction(kind, index, session)
     }
 
     private fun runNext(session: Int) {
@@ -520,21 +617,21 @@ class MacroAccessibilityService : AccessibilityService() {
         if (index >= steps.size) {
             loopCount++
             playIndex = 0
-            val gap = (100L / playbackSpeed).toLong().coerceIn(20L, 100L)
             handler.postDelayed({
                 if (hasValidLicense() && playing && session == playbackToken) runStep(0, session, 0)
-            }, gap)
+            }, loopGap)
             return
         }
 
         playIndex = index
         updateExecutionReport()
         val step = steps[index]
-        val delay = (step.delay / playbackSpeed).toLong().coerceIn(15L, 20000L)
+        // سرعت فقط روی مکث قبل از هر مرحله اثر دارد؛ مسافت و مدت اسکرول ثابت است
+        val delay = (step.delay / playbackSpeed).toLong().coerceIn(50L, 20000L)
         handler.postDelayed({
             if (!hasValidLicense()) { stopPlayback(); return@postDelayed }
             if (!playing || session != playbackToken) return@postDelayed
-            
+
             if (!isScreenOn()) {
                 status?.text = "صفحه خاموش است؛ منتظر روشن‌شدن…"
                 handler.postDelayed({
@@ -542,14 +639,31 @@ class MacroAccessibilityService : AccessibilityService() {
                 }, 1000L)
                 return@postDelayed
             }
-            
+
+            // اگر از برنامه‌ی هدف (بله) خارج شدیم، ادامه نده
+            val expected = expectedPkg
+            if (expected != null) {
+                val cur = currentPackage()
+                if (cur != null && cur != expected) {
+                    pkgMismatch++
+                    if (pkgMismatch > 6) {
+                        failPlayback("از برنامه خارج شد؛ پخش متوقف شد")
+                        return@postDelayed
+                    }
+                    status?.text = "منتظر بازگشت به برنامه…"
+                    handler.postDelayed({
+                        if (playing && session == playbackToken) runStep(index, session, retry)
+                    }, 400L)
+                    return@postDelayed
+                } else {
+                    pkgMismatch = 0
+                }
+            }
+
             when (step.kind) {
                 "BACK" -> {
                     performGlobalAction(GLOBAL_ACTION_BACK)
-                    val backDelay = (400L / playbackSpeed).toLong().coerceIn(50L, 500L)
-                    handler.postDelayed({
-                        if (playing && session == playbackToken) runStep(index + 1, session, 0)
-                    }, backDelay)
+                    afterAction("BACK", index, session)
                 }
                 "SCROLL", "TAP" -> dispatchStep(step, index, session, retry)
                 else -> runStep(index + 1, session, 0)
@@ -561,22 +675,20 @@ class MacroAccessibilityService : AccessibilityService() {
         if (!hasValidLicense()) { stopPlayback(); return }
         if (!playing || session != playbackToken) return
 
+        // مسیر سازگار با اندروید ۶
         if (Build.VERSION.SDK_INT < 24) {
-            if (step.kind == "SCROLL") {
-                val root = rootInActiveWindow
-                val forward = step.scrollDeltaY >= 0
-                val scrolled = try { performScrollAtPoint(root, step.x.toInt(), step.y.toInt(), forward) || performScrollOnNode(root, forward) } finally { root?.recycle() }
-                if (!scrolled) status?.text = "این صفحه اسکرول قابل‌دسترسی ندارد"
-                val baseDuration = if (step.duration > 0) step.duration else (step.delay * 0.8f).toLong().coerceIn(200L, 1500L)
-                val duration = (baseDuration / playbackSpeed).toLong().coerceIn(150L, 3000L)
-                handler.postDelayed({ if (playing && session == playbackToken) runStep(index + 1, session, 0) }, duration)
-                return
-            } else {
-                val root = rootInActiveWindow
-                try { clickNodeAt(root, step.x.toInt(), step.y.toInt()) } finally { root?.recycle() }
-                handler.postDelayed({ if (playing && session == playbackToken) runStep(index + 1, session, 0) }, 150L)
-                return
-            }
+            val root = rootInActiveWindow
+            try {
+                if (step.kind == "SCROLL") {
+                    val forward = step.scrollDeltaY >= 0
+                    val scrolled = performScrollAtPoint(root, step.x.toInt(), step.y.toInt(), forward) || performScrollOnNode(root, forward)
+                    if (!scrolled) status?.text = "این صفحه اسکرول قابل‌دسترسی ندارد"
+                } else {
+                    clickNodeAt(root, step.x.toInt(), step.y.toInt())
+                }
+            } finally { root?.recycle() }
+            afterAction(step.kind, index, session)
+            return
         }
 
         val screenWidth = resources.displayMetrics.widthPixels
@@ -586,53 +698,66 @@ class MacroAccessibilityService : AccessibilityService() {
             return
         }
 
+        val isScroll = step.kind == "SCROLL"
         val path = Path()
         var gestureDuration = 70L
+        var holdX = step.x
+        var holdY = step.y
 
-        if (step.kind == "TAP") {
+        if (!isScroll) {
             path.moveTo(step.x, step.y)
-            gestureDuration = 70L
         } else {
             val left = step.left.coerceIn(0, screenWidth - 2)
             val right = step.right.coerceIn(left + 2, screenWidth)
             val top = step.top.coerceIn(0, screenHeight - 2)
             val bottom = step.bottom.coerceIn(top + 2, screenHeight)
-            val minY = top + 2f; val maxY = bottom - 2f
-            val height = (bottom - top).toFloat().coerceAtLeast(4f)
-            val x = step.x.coerceIn(left.toFloat() + 2f, right.toFloat() - 2f)
-            val estimated = if (step.scrollDeltaY != 0) abs(step.scrollDeltaY.toFloat()) else height * 0.78f
-            val distance = min(height * 0.90f, max(height * 0.45f, estimated * 0.65f))
-            val centerY = step.y.coerceIn(minY, maxY)
-            val direction = if (step.scrollDeltaY < 0) 1f else -1f
-            var startY = (centerY - direction * distance / 2f).coerceIn(minY, maxY)
-            var endY = (centerY + direction * distance / 2f).coerceIn(minY, maxY)
-            if (abs(startY - endY) < 2f) {
-                startY = if (centerY > (minY + maxY) / 2f) maxY else minY
-                endY = if (startY == minY) maxY else minY
-            }
+
+            // ناحیه‌ی امن: دور از لبه‌های بالا/پایین تا ژست‌های سیستم (خانه/بازگشت) فعال نشوند
+            var safeTop = max(top + 2f, screenHeight * 0.04f)
+            var safeBottom = min(bottom - 2f, screenHeight * 0.92f)
+            if (safeBottom - safeTop < 8f) { safeTop = top + 2f; safeBottom = bottom - 2f }
+            val region = (safeBottom - safeTop).coerceAtLeast(4f)
+            val mid = (safeTop + safeBottom) / 2f
+
+            // مسافت فقط به مقدار ضبط‌شده و ارتفاع ناحیه بستگی دارد، نه به سرعت پخش
+            val estimated = if (step.scrollDeltaY != 0) abs(step.scrollDeltaY.toFloat()) * scrollDistanceFactor else region * 0.78f
+            val distance = estimated.coerceIn(region * scrollMinFraction, region * scrollMaxFraction)
+
+            // مرکز ثابت و مسافت دقیق؛ بدون کوتاه شدن ناشی از clamp
+            val forward = step.scrollDeltaY >= 0
+            val startY = if (forward) mid + distance / 2f else mid - distance / 2f
+            val endY = if (forward) mid - distance / 2f else mid + distance / 2f
+            val x = step.x.coerceIn(left + 2f, right - 2f).coerceIn(screenWidth * 0.08f, screenWidth * 0.92f)
+
             path.moveTo(x, startY)
             path.lineTo(x, endY)
-            val baseDuration = if (step.duration > 0) step.duration else (step.delay * 0.8f).toLong().coerceIn(200L, 1500L)
-            gestureDuration = (baseDuration / playbackSpeed).toLong().coerceIn(100L, 3000L)
+            holdX = x
+            holdY = endY
+            // مدت حرکت ثابت است تا سرعت انگشت (و در نتیجه fling) در همه‌ی سرعت‌ها یکسان باشد
+            gestureDuration = scrollMoveDuration
         }
 
-        val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, gestureDuration))
-            .build()
+        val stroke = if (isScroll && Build.VERSION.SDK_INT >= 26) {
+            GestureDescription.StrokeDescription(path, 0, gestureDuration, true)
+        } else {
+            GestureDescription.StrokeDescription(path, 0, gestureDuration)
+        }
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
 
         currentAttempt++
         val attempt = currentAttempt
 
-        armWatchdog(step, index, session, retry, attempt, gestureDuration + 15000L)
+        armWatchdog(step, index, session, retry, attempt, gestureDuration + scrollHoldDuration + 15000L)
 
         val accepted = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
                 if (attempt != currentAttempt) return
-                disarmWatchdog()
-                if (!playing || session != playbackToken) return
-                handler.postDelayed({
-                    if (playing && session == playbackToken) runStep(index + 1, session, 0)
-                }, 30L)
+                if (!playing || session != playbackToken) { disarmWatchdog(); return }
+                if (isScroll && Build.VERSION.SDK_INT >= 26) {
+                    dispatchScrollHold(stroke, holdX, holdY, step.kind, index, session, attempt)
+                } else {
+                    finishStep(step.kind, index, session, attempt)
+                }
             }
 
             override fun onCancelled(gestureDescription: GestureDescription?) {
@@ -643,31 +768,51 @@ class MacroAccessibilityService : AccessibilityService() {
                     val backoff = if (retry < 8) 400L else 1000L
                     status?.text = "تداخل لمس؛ تلاش مجدد ${retry + 1}"
                     handler.postDelayed({
-                        if (playing && session == playbackToken) dispatchStep(step, index, session, retry + 1)
+                        if (hasValidLicense() && playing && session == playbackToken) dispatchStep(step, index, session, retry + 1)
                     }, backoff)
                 } else {
-                    handler.postDelayed({
-                        if (playing && session == playbackToken) runStep(index + 1, session, 0)
-                    }, 100L)
+                    failPlayback("مرحله ${index + 1} ناموفق بود؛ پخش متوقف شد")
                 }
             }
         }, null)
 
-        if (!accepted) {
-            if (attempt == currentAttempt) {
-                disarmWatchdog()
-                if (retry < maxStepRetries) {
-                    val backoff = if (retry < 8) 300L else 1000L
-                    handler.postDelayed({
-                        if (playing && session == playbackToken) dispatchStep(step, index, session, retry + 1)
-                    }, backoff)
-                } else {
-                    handler.postDelayed({
-                        if (playing && session == playbackToken) runStep(index + 1, session, 0)
-                    }, 100L)
-                }
+        if (!accepted && attempt == currentAttempt) {
+            disarmWatchdog()
+            if (retry < maxStepRetries) {
+                val backoff = if (retry < 8) 300L else 1000L
+                handler.postDelayed({
+                    if (hasValidLicense() && playing && session == playbackToken) dispatchStep(step, index, session, retry + 1)
+                }, backoff)
+            } else {
+                failPlayback("مرحله ${index + 1} ناموفق بود؛ پخش متوقف شد")
             }
         }
+    }
+
+    /**
+     * مرحله‌ی دوم اسکرول: انگشت در نقطه‌ی پایان کمی ثابت می‌ماند و بعد رها می‌شود.
+     * این کار سرعت رهاسازی را صفر می‌کند تا fling (ادامه‌ی خودکار اسکرول) رخ ندهد
+     * و مقدار اسکرول دقیقاً برابر مسافت حرکت انگشت باشد.
+     */
+    @android.annotation.TargetApi(26)
+    private fun dispatchScrollHold(
+        first: GestureDescription.StrokeDescription,
+        x: Float, y: Float,
+        kind: String, index: Int, session: Int, attempt: Long
+    ) {
+        val holdPath = Path().apply { moveTo(x, y) }
+        val second = first.continueStroke(holdPath, 0L, scrollHoldDuration, false)
+        val gesture = GestureDescription.Builder().addStroke(second).build()
+        val ok = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                finishStep(kind, index, session, attempt)
+            }
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                // اسکرول در مرحله‌ی اول انجام شده؛ تکرار نمی‌کنیم تا دوبار اسکرول نشود
+                finishStep(kind, index, session, attempt)
+            }
+        }, null)
+        if (!ok) finishStep(kind, index, session, attempt)
     }
 
     private fun armWatchdog(step: Step, index: Int, session: Int, retry: Int, attempt: Long, timeout: Long) {
@@ -679,7 +824,7 @@ class MacroAccessibilityService : AccessibilityService() {
             handler.postDelayed({
                 if (!playing || session != playbackToken) return@postDelayed
                 if (retry < maxStepRetries) dispatchStep(step, index, session, retry + 1)
-                else runStep(index + 1, session, 0)
+                else failPlayback("مرحله ${index + 1} ناموفق بود؛ پخش متوقف شد")
             }, 300L)
         }
         watchdogRunnable = r
@@ -845,9 +990,9 @@ class MacroAccessibilityService : AccessibilityService() {
         val params = panelParams ?: return
         params.width = dp(panelWidthDp)
         params.height = dp(panelHeightDp)
-        try { 
-            panel?.let { wm.updateViewLayout(it, params) } 
-        } catch (e: Exception) { }
+        try {
+            panel?.let { wm.updateViewLayout(it, params) }
+        } catch (_: Exception) { }
         getSharedPreferences("touch_loop", MODE_PRIVATE).edit()
             .putInt("panel_width_dp", panelWidthDp).putInt("panel_height_dp", panelHeightDp).apply()
     }
@@ -881,12 +1026,12 @@ class MacroAccessibilityService : AccessibilityService() {
                 wm.removeView(currentBubble)
                 wm.addView(currentBubble, currentBubbleParams)
             }
-        } catch (e: Exception) { }
+        } catch (_: Exception) { }
     }
 
     private fun hideTouchLock() {
         isCurrentlyLocked = false
-        touchLockOverlay?.let { try { wm.removeView(it) } catch (e: Exception) { } }
+        touchLockOverlay?.let { try { wm.removeView(it) } catch (_: Exception) { } }
         touchLockOverlay = null
     }
 
@@ -936,11 +1081,11 @@ class MacroAccessibilityService : AccessibilityService() {
         ).apply { gravity = Gravity.TOP or Gravity.START }
         pointPicker = root
         try { wm.addView(root, params); status?.text = "محل کلیک را انتخاب کن" }
-        catch (e: Exception) { pointPicker = null; status?.text = "انتخاب نقطه باز نشد" }
+        catch (_: Exception) { pointPicker = null; status?.text = "انتخاب نقطه باز نشد" }
     }
 
     private fun removePointPicker() {
-        pointPicker?.let { try { wm.removeView(it) } catch (e: Exception) { } }
+        pointPicker?.let { try { wm.removeView(it) } catch (_: Exception) { } }
         pointPicker = null
     }
 
@@ -954,7 +1099,7 @@ class MacroAccessibilityService : AccessibilityService() {
     private fun collapseToBubble() {
         if (!hasValidLicense() || panel == null || panelCollapsed) return
         val oldParams = panelParams
-        panel?.let { try { wm.removeView(it) } catch (e: Exception) { } }
+        panel?.let { try { wm.removeView(it) } catch (_: Exception) { } }
         panel = null
         panelCollapsed = true
         val size = dp(52)
@@ -984,7 +1129,7 @@ class MacroAccessibilityService : AccessibilityService() {
                     if (moved) {
                         params.x = (initialX + dx).coerceIn(0, (resources.displayMetrics.widthPixels - size).coerceAtLeast(0))
                         params.y = (initialY + dy).coerceIn(0, (resources.displayMetrics.heightPixels - size).coerceAtLeast(0))
-                        try { wm.updateViewLayout(view, params) } catch (e: Exception) { }
+                        try { wm.updateViewLayout(view, params) } catch (_: Exception) { }
                     }
                     true
                 }
@@ -993,22 +1138,20 @@ class MacroAccessibilityService : AccessibilityService() {
             }
         }
         bubble = bubbleView
-        try { 
+        try {
             wm.addView(bubbleView, params)
-            updateKeepScreenOnFlag(playing) 
-        } catch (e: Exception) { 
+            updateKeepScreenOnFlag(playing)
+        } catch (_: Exception) {
             bubble = null
             panelCollapsed = false
-            showPanel() 
+            showPanel()
         }
     }
 
     private fun expandFromBubble() {
         if (!hasValidLicense()) { removePanel(); return }
-        bubble?.let { 
-            try { 
-                wm.removeView(it) 
-            } catch (e: Exception) { } 
+        bubble?.let {
+            try { wm.removeView(it) } catch (_: Exception) { }
         }
         val oldParams = bubbleParams
         bubble = null
@@ -1019,11 +1162,9 @@ class MacroAccessibilityService : AccessibilityService() {
         if (params != null && oldParams != null) {
             params.x = oldParams.x
             params.y = oldParams.y
-            try { 
-                panel?.let { 
-                    wm.updateViewLayout(it, params) 
-                }
-            } catch (e: Exception) { }
+            try {
+                panel?.let { wm.updateViewLayout(it, params) }
+            } catch (_: Exception) { }
         }
     }
 
@@ -1034,6 +1175,8 @@ class MacroAccessibilityService : AccessibilityService() {
         currentAttempt++
         playIndex = 0
         loopCount = 0
+        expectedPkg = null
+        pkgMismatch = 0
         executionReport?.visibility = View.GONE
         disarmWatchdog()
         updateKeepScreenOnFlag(false)
@@ -1081,7 +1224,7 @@ class MacroAccessibilityService : AccessibilityService() {
                     scrollDeltaY = obj.optInt("scrollDeltaY", 0)
                 ))
             }
-        } catch (e: Exception) { steps.clear() }
+        } catch (_: Exception) { steps.clear() }
     }
 
     private fun removePanel() {
@@ -1091,15 +1234,11 @@ class MacroAccessibilityService : AccessibilityService() {
         pendingScroll = null
         removePointPicker()
         hideTouchLock()
-        panel?.let { 
-            try { 
-                wm.removeView(it) 
-            } catch (e: Exception) { } 
+        panel?.let {
+            try { wm.removeView(it) } catch (_: Exception) { }
         }
-        bubble?.let { 
-            try { 
-                wm.removeView(it) 
-            } catch (e: Exception) { } 
+        bubble?.let {
+            try { wm.removeView(it) } catch (_: Exception) { }
         }
         panel = null
         bubble = null
