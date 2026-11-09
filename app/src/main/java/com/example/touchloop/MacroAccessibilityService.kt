@@ -26,22 +26,24 @@ import android.widget.TextView
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.max
-import kotlin.math.min
 
 class MacroAccessibilityService : AccessibilityService() {
 
+    /**
+     * TAP   : لمس در نقطه‌ی (x, y)
+     * SWIPE : کشیدن از (x, y) تا (x2, y2) در مدت duration  (همان اسکرول)
+     * BACK  : دکمه‌ی بازگشت
+     */
     data class Step(
         val kind: String,
         val x: Float = 0f,
         val y: Float = 0f,
-        val left: Int = 0,
-        val top: Int = 0,
-        val right: Int = 0,
-        val bottom: Int = 0,
+        val x2: Float = 0f,
+        val y2: Float = 0f,
         val delay: Long = 350L,
-        val duration: Long = 0L,
-        val scrollDeltaY: Int = 0
+        val duration: Long = 0L
     )
 
     private val handler = Handler(Looper.getMainLooper())
@@ -74,13 +76,9 @@ class MacroAccessibilityService : AccessibilityService() {
     private var status: TextView? = null
     private var executionReport: TextView? = null
     private var pointPicker: View? = null
-    private var ignoreEventsUntil = 0L
 
     private lateinit var wm: WindowManager
-    private var pendingScroll: Step? = null
-    private var scrollStartTime: Long = 0L
 
-    private val flushScrollRunnable = Runnable { flushPendingScroll() }
     private val minPanelWidthDp = 140
     private val minPanelHeightDp = 180
 
@@ -88,31 +86,14 @@ class MacroAccessibilityService : AccessibilityService() {
     private var watchdogRunnable: Runnable? = null
     private var currentAttempt = 0L
 
-    // ---------- کنترل هماهنگی در پخش ----------
+    // ---------- هماهنگی در پخش ----------
     private var expectedPkg: String? = null
     private var pkgMismatch = 0
     private var lastUiChangeAt = 0L
 
-    // ---------- اندازه‌گیری و تصحیح اسکرول (حلقه‌ی بسته) ----------
-    private var measuringScroll = false
-    private var measuredScrollY = 0
-    private var scrollEventsSeen = 0
-    private var scrollTarget = 0
-    private var scrollCorrections = 0
-    private var inCorrection = false
-    private var measureX = 0
-    private var measureY = 0
-    // حداکثر تعداد تصحیح برای هر اسکرول
-    private val maxScrollCorrections = 2
-    // خطای مجاز (پیکسل) یا ۲٪ مقدار هدف، هر کدام بزرگ‌تر بود
-    private val scrollTolerancePx = 6
-    // اندروید رویداد اسکرول را تا ~۲۰۰ms تجمیع می‌کند؛ قبل از اندازه‌گیری باید صبر کرد
-    private val scrollVerifyWait = 260L
-
-    // حداقل زمان انتظار بعد از هر عمل (ثابت و مستقل از سرعت)
-    // (این مقادیر در سرعت ۱× هستند و با سرعت پخش کوچک/بزرگ می‌شوند)
+    // حداقل زمان انتظار بعد از هر عمل (در سرعت ۱×؛ با سرعت پخش تقسیم می‌شود)
     private val tapSettleMin = 60L
-    private val scrollSettleMin = 60L
+    private val swipeSettleMin = 60L
     private val backSettleMin = 150L
     // اگر این مدت هیچ تغییر UI نیامد، صفحه آرام حساب می‌شود
     private val settleQuiet = 50L
@@ -120,20 +101,26 @@ class MacroAccessibilityService : AccessibilityService() {
     private val settleMax = 1200L
     // مکث بین دو دور
     private val loopGap = 150L
-    // سقف مکث قبل از هر مرحله (زمان ضبط‌شده شامل تأخیر انسانی است)
+    // سقف مکث قبل از هر مرحله (زمان ضبط‌شده شامل مکث انسانی است)
     private val maxPreStepDelay = 150L
 
-    // ---------- تنظیمات اسکرول (ثابت، مستقل از سرعت پخش) ----------
-    // مدت حرکت انگشت
-    private val scrollMoveDuration = 220L
-    // مکث انگشت در انتهای حرکت (برای جلوگیری از fling؛ اندروید ۸+)
+    // ---------- اسکرول ----------
+    // true: انگشت در انتهای کشیدن کمی ثابت می‌ماند تا fling (ادامه‌ی خودکار اسکرول) رخ ندهد
+    // و اسکرول در هر بار دقیقاً یکسان باشد (اندروید ۸+). false: رفتار طبیعی همراه با fling.
+    private val suppressFling = true
     private val scrollHoldDuration = 60L
-    // ضریب مسافت نسبت به مقدار ضبط‌شده (۱.۰ = همان مقدار ضبط‌شده)
-    private val scrollDistanceFactor = 1.0f
-    // جبران touch slop (۱.۰ = جبران کامل). اگر اسکرول هنوز کم/زیاد بود این را تنظیم کنید
-    private val scrollSlopCompensation = 1.0f
-    // حداکثر مسافت هر کشیدن نسبت به ارتفاع ناحیه‌ی امن (بیشتر از آن چندبخشی می‌شود)
-    private val scrollMaxFraction = 0.90f
+
+    // ---------- ضبط دقیق لمس ----------
+    private var captureOverlay: View? = null
+    private var captureParams: WindowManager.LayoutParams? = null
+    private var capDownX = 0f
+    private var capDownY = 0f
+    private var capLastX = 0f
+    private var capLastY = 0f
+    private var capDownT = 0L
+    private var capMaxDist = 0f
+    private var capMulti = false
+    private var capPreDelay = 350L
 
     private val powerManager: PowerManager? by lazy { getSystemService(POWER_SERVICE) as? PowerManager }
 
@@ -241,82 +228,25 @@ class MacroAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (!hasValidLicense()) { recording = false; stopPlayback(); return }
-        if (event == null) return
-
-        // در حال پخش: تغییرات UI برنامه‌ی هدف را ثبت کن و اسکرول واقعی را اندازه بگیر
-        if (playing) {
-            val t = event.eventType
-            val isOther = event.packageName?.toString() != packageName
-            if (isOther && (t == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
-                        t == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED ||
-                        t == AccessibilityEvent.TYPE_VIEW_SCROLLED)) {
-                lastUiChangeAt = System.currentTimeMillis()
-            }
-            if (isOther && t == AccessibilityEvent.TYPE_VIEW_SCROLLED && measuringScroll && Build.VERSION.SDK_INT >= 28) {
-                val src = event.source
-                if (src != null) {
-                    val b = Rect()
-                    try { src.getBoundsInScreen(b) } finally { src.recycle() }
-                    if (b.contains(measureX, measureY)) {
-                        measuredScrollY += event.scrollDeltaY
-                        scrollEventsSeen++
-                    }
-                }
-            }
+        if (!hasValidLicense()) {
+            recording = false
+            hideCaptureOverlay()
+            stopPlayback()
             return
         }
+        if (event == null || !playing) return
 
-        if (!recording) return
-        if (System.currentTimeMillis() < ignoreEventsUntil) return
-        if (event.packageName?.toString() == packageName) return
-        if (event.eventType != AccessibilityEvent.TYPE_VIEW_CLICKED && event.eventType != AccessibilityEvent.TYPE_VIEW_SCROLLED) return
-
-        val source = event.source ?: return
-        val bounds = Rect()
-        try { source.getBoundsInScreen(bounds) } finally { source.recycle() }
-        if (bounds.width() <= 0 || bounds.height() <= 0) return
-
-        val now = System.currentTimeMillis()
-        val delay = if (lastEventAt == 0L) 350L else (now - lastEventAt).coerceIn(120L, 5000L)
-
-        if (event.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED) {
-            if (pendingScroll == null) scrollStartTime = now
-            val delta = if (Build.VERSION.SDK_INT >= 28) event.scrollDeltaY else 0
-            val newScroll = Step(kind = "SCROLL", x = bounds.exactCenterX(), y = bounds.exactCenterY(),
-                left = bounds.left, top = bounds.top, right = bounds.right, bottom = bounds.bottom, delay = delay, scrollDeltaY = delta)
-
-            val oldScroll = pendingScroll
-            if (oldScroll != null) {
-                val sameRegion = abs(oldScroll.x - newScroll.x) < 80f && abs(oldScroll.y - newScroll.y) < 100f &&
-                        oldScroll.left == newScroll.left && oldScroll.right == newScroll.right && oldScroll.top == newScroll.top && oldScroll.bottom == newScroll.bottom
-                val sameDirection = oldScroll.scrollDeltaY == 0 || newScroll.scrollDeltaY == 0 || oldScroll.scrollDeltaY.signCompat() == newScroll.scrollDeltaY.signCompat()
-
-                if (sameRegion && sameDirection) {
-                    val accumulated = (oldScroll.scrollDeltaY.toLong() + newScroll.scrollDeltaY.toLong()).coerceIn(Int.MIN_VALUE.toLong(), Int.MAX_VALUE.toLong()).toInt()
-                    pendingScroll = newScroll.copy(scrollDeltaY = accumulated, delay = oldScroll.delay)
-                } else { flushPendingScroll(); pendingScroll = newScroll }
-            } else { pendingScroll = newScroll }
-            handler.removeCallbacks(flushScrollRunnable)
-            handler.postDelayed(flushScrollRunnable, 200L)
-        } else {
-            handler.removeCallbacks(flushScrollRunnable)
-            flushPendingScroll()
-            addRecordedStep(Step(kind = "TAP", x = bounds.exactCenterX(), y = bounds.exactCenterY(),
-                left = bounds.left, top = bounds.top, right = bounds.right, bottom = bounds.bottom, delay = delay))
+        // در حال پخش: تغییرات UI برنامه‌ی هدف را ثبت کن تا بدانیم صفحه کی آرام شده است
+        val t = event.eventType
+        if ((t == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+                    t == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED ||
+                    t == AccessibilityEvent.TYPE_VIEW_SCROLLED) &&
+            event.packageName?.toString() != packageName) {
+            lastUiChangeAt = System.currentTimeMillis()
         }
     }
 
-    private fun Int.signCompat(): Int = when { this > 0 -> 1; this < 0 -> -1; else -> 0 }
-
-    private fun flushPendingScroll() {
-        val scroll = pendingScroll ?: return
-        pendingScroll = null
-        if (recording && !playing && hasValidLicense()) {
-            val duration = (System.currentTimeMillis() - scrollStartTime).coerceIn(100L, 3000L)
-            addRecordedStep(scroll.copy(duration = duration))
-        }
-    }
+    override fun onInterrupt() { stopAll() }
 
     private fun addRecordedStep(step: Step) {
         if (!hasValidLicense()) return
@@ -324,8 +254,6 @@ class MacroAccessibilityService : AccessibilityService() {
         lastEventAt = System.currentTimeMillis()
         status?.text = if (recording) "در حال ضبط • ${steps.size} مرحله" else "${steps.size} مرحله"
     }
-
-    override fun onInterrupt() { stopAll() }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
     private fun scaleFactor(): Float = (panelWidthDp / 220f).coerceIn(0.6f, 1.4f)
@@ -349,6 +277,8 @@ class MacroAccessibilityService : AccessibilityService() {
             }
         }
     }
+
+    // ======================= پنل =======================
 
     private fun showPanel() {
         if (!hasValidLicense() || panel != null) return
@@ -397,6 +327,7 @@ class MacroAccessibilityService : AccessibilityService() {
             setOnClickListener {
                 if (!hasValidLicense()) {
                     recording = false
+                    hideCaptureOverlay()
                     stopPlayback()
                     status?.text = "کد شما مسدود یا منقضی شده است"
                     removePanel()
@@ -436,11 +367,19 @@ class MacroAccessibilityService : AccessibilityService() {
 
         contentContainer.addView(status)
         contentContainer.addView(executionReport)
+
         contentContainer.addView(button("● ضبط") {
             checkLicenseStatusOnline(force = true)
             if (!hasValidLicense()) return@button
-            stopPlayback(); handler.removeCallbacks(flushScrollRunnable); pendingScroll = null; steps.clear()
-            recording = true; lastEventAt = 0L; status?.text = "در حال ضبط…"; executionReport?.visibility = View.GONE
+            stopPlayback()
+            steps.clear()
+            temporarilyUnlockForPlayback()
+            removePointPicker()
+            recording = true
+            lastEventAt = 0L
+            executionReport?.visibility = View.GONE
+            showCaptureOverlay()
+            status?.text = "در حال ضبط • لمس‌ها دقیق ثبت می‌شوند"
         })
         contentContainer.addView(button("＋ کلیک") {
             if (!hasValidLicense()) return@button
@@ -449,20 +388,30 @@ class MacroAccessibilityService : AccessibilityService() {
         contentContainer.addView(button("↩ بازگشت") {
             if (!hasValidLicense()) return@button
             if (recording && !playing) {
-                handler.removeCallbacks(flushScrollRunnable); flushPendingScroll(); addRecordedStep(Step(kind = "BACK")); performGlobalAction(GLOBAL_ACTION_BACK)
+                addRecordedStep(Step(kind = "BACK"))
+                performGlobalAction(GLOBAL_ACTION_BACK)
             } else if (playing) { status?.text = "برای توقف، Stop را بزن" }
             else { performGlobalAction(GLOBAL_ACTION_BACK) }
         })
         contentContainer.addView(button("■ توقف") {
             if (!hasValidLicense()) return@button
-            if (recording) { handler.removeCallbacks(flushScrollRunnable); flushPendingScroll() }
-            recording = false; stopPlayback(); saveMacro(); status?.text = "ذخیره شد • ${steps.size} مرحله"; executionReport?.visibility = View.GONE
+            recording = false
+            hideCaptureOverlay()
+            removePointPicker()
+            stopPlayback()
+            saveMacro()
+            restoreLockAfterPlayback()
+            status?.text = "ذخیره شد • ${steps.size} مرحله"
+            executionReport?.visibility = View.GONE
         })
         contentContainer.addView(button("▶ پخش") {
             checkLicenseStatusOnline(force = true)
             if (!hasValidLicense()) return@button
-            if (recording) { handler.removeCallbacks(flushScrollRunnable); flushPendingScroll() }
-            recording = false; stopPlayback(); saveMacro()
+            recording = false
+            hideCaptureOverlay()
+            removePointPicker()
+            stopPlayback()
+            saveMacro()
             if (steps.isEmpty()) { status?.text = "ابتدا ماکرو ضبط کن" }
             else {
                 playbackToken++; loopCount = 1; playing = true; playIndex = 0
@@ -480,6 +429,7 @@ class MacroAccessibilityService : AccessibilityService() {
         contentContainer.addView(button("✎ ویرایش") {
             if (!hasValidLicense()) return@button
             if (playing) { status?.text = "ابتدا پخش را متوقف کن"; return@button }
+            if (recording) { status?.text = "ابتدا ضبط را متوقف کن"; return@button }
             if (steps.isEmpty()) status?.text = "ماکرویی برای ویرایش نیست" else showMacroEditor()
         })
 
@@ -530,7 +480,7 @@ class MacroAccessibilityService : AccessibilityService() {
         var resizeData: FloatArray? = null
         resizeHandle.setOnTouchListener { _, event ->
             if (!hasValidLicense()) return@setOnTouchListener true
-            val params = panelParams ?: return@setOnTouchListener false
+            if (panelParams == null) return@setOnTouchListener false
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
                     resizeData = floatArrayOf(event.rawX, event.rawY, panelWidthDp.toFloat(), panelHeightDp.toFloat())
@@ -573,28 +523,208 @@ class MacroAccessibilityService : AccessibilityService() {
         if (!playing || steps.isEmpty()) { executionReport?.visibility = View.GONE; return }
         val current = playIndex + 1
         val total = steps.size
-        val step = steps.getOrNull(playIndex)
-        val stepType = when (step?.kind) { "TAP" -> "کلیک"; "SCROLL" -> "اسکرول"; "BACK" -> "بازگشت"; else -> "نامشخص" }
-        executionReport?.text = "دور $loopCount • مرحله $current از $total ($stepType)"
+        executionReport?.text = "دور $loopCount • مرحله $current از $total (${stepTypeName(steps.getOrNull(playIndex)?.kind)})"
     }
 
-    // ---------- توابع کمکی هماهنگی ----------
+    private fun stepTypeName(kind: String?): String = when (kind) {
+        "TAP" -> "کلیک"
+        "SWIPE" -> "اسکرول"
+        "BACK" -> "بازگشت"
+        else -> "نامشخص"
+    }
+
+    private fun bringControlsToFront() {
+        try {
+            val p = panel
+            val pp = panelParams
+            if (p != null && pp != null) { wm.removeView(p); wm.addView(p, pp) }
+            val b = bubble
+            val bp = bubbleParams
+            if (b != null && bp != null) { wm.removeView(b); wm.addView(b, bp) }
+        } catch (_: Exception) { }
+    }
+
+    // ======================= ضبط دقیق لمس =======================
+
+    /** یک لایه‌ی نیمه‌شفاف روی صفحه که مختصات واقعی لمس را می‌گیرد و همان را اجرا می‌کند */
+    private fun showCaptureOverlay() {
+        if (captureOverlay != null) return
+        val v = View(this).apply {
+            setBackgroundColor(0x12FF3B30)
+            setOnTouchListener { _, e -> handleCaptureTouch(e); true }
+        }
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        )
+        try {
+            wm.addView(v, params)
+            captureOverlay = v
+            captureParams = params
+            bringControlsToFront()
+        } catch (_: Exception) {
+            captureOverlay = null
+            captureParams = null
+            recording = false
+            status?.text = "ضبط شروع نشد"
+        }
+    }
+
+    private fun hideCaptureOverlay() {
+        captureOverlay?.let { try { wm.removeView(it) } catch (_: Exception) { } }
+        captureOverlay = null
+        captureParams = null
+    }
+
+    private fun setCaptureTouchable(touchable: Boolean) {
+        val v = captureOverlay ?: return
+        val p = captureParams ?: return
+        p.flags = if (touchable) p.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        else p.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        try { wm.updateViewLayout(v, p) } catch (_: Exception) { }
+    }
+
+    private fun handleCaptureTouch(e: MotionEvent) {
+        if (!hasValidLicense()) { removePanel(); return }
+        if (!recording || playing) return
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                capDownX = e.rawX; capDownY = e.rawY
+                capLastX = e.rawX; capLastY = e.rawY
+                capDownT = e.eventTime
+                capMaxDist = 0f
+                capMulti = false
+                val now = System.currentTimeMillis()
+                capPreDelay = if (lastEventAt == 0L) 350L else (now - lastEventAt).coerceIn(120L, 5000L)
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> capMulti = true
+            MotionEvent.ACTION_MOVE -> {
+                if (!capMulti) {
+                    capLastX = e.rawX; capLastY = e.rawY
+                    capMaxDist = max(capMaxDist, hypot(capLastX - capDownX, capLastY - capDownY))
+                }
+            }
+            MotionEvent.ACTION_UP -> {
+                if (capMulti) return
+                capLastX = e.rawX; capLastY = e.rawY
+                capMaxDist = max(capMaxDist, hypot(capLastX - capDownX, capLastY - capDownY))
+                val tapSlop = ViewConfiguration.get(this).scaledTouchSlop * 2f
+                val step = if (capMaxDist <= tapSlop) {
+                    Step(kind = "TAP", x = capDownX, y = capDownY, delay = capPreDelay)
+                } else {
+                    Step(
+                        kind = "SWIPE", x = capDownX, y = capDownY, x2 = capLastX, y2 = capLastY,
+                        delay = capPreDelay, duration = (e.eventTime - capDownT).coerceIn(80L, 3000L)
+                    )
+                }
+                addRecordedStep(step)
+                replayLive(step)
+            }
+            else -> { }
+        }
+    }
+
+    /** لمس ضبط‌شده را همان لحظه (مثل پخش) روی صفحه اجرا می‌کند؛ پس آنچه می‌بینید همان است که پخش می‌شود */
+    private fun replayLive(step: Step) {
+        setCaptureTouchable(false)
+        handler.postDelayed({
+            if (!hasValidLicense()) { setCaptureTouchable(true); return@postDelayed }
+            performStep(step) {
+                handler.postDelayed({
+                    setCaptureTouchable(true)
+                    lastEventAt = System.currentTimeMillis()
+                }, 40L)
+            }
+        }, 80L)
+    }
+
+    // ======================= اجرای لمس =======================
+
+    /** اجرای یک مرحله‌ی لمسی (TAP یا SWIPE)؛ done(true) یعنی انجام شد */
+    private fun performStep(step: Step, done: (Boolean) -> Unit) {
+        if (Build.VERSION.SDK_INT >= 24) {
+            performTouchStep(step, done)
+            return
+        }
+        // اندروید ۶: فقط از طریق گره‌های دسترسی‌پذیری
+        val root = rootInActiveWindow
+        try {
+            if (step.kind == "SWIPE") {
+                val forward = step.y2 < step.y
+                val ok = performScrollAtPoint(root, step.x.toInt(), step.y.toInt(), forward) || performScrollOnNode(root, forward)
+                if (!ok) status?.text = "این صفحه اسکرول قابل‌دسترسی ندارد"
+            } else {
+                if (!clickNodeAt(root, step.x.toInt(), step.y.toInt())) status?.text = "این کلیک در اندروید ۶ قابل اجرا نیست"
+            }
+        } finally { root?.recycle() }
+        done(true)
+    }
+
+    @android.annotation.TargetApi(24)
+    private fun performTouchStep(step: Step, done: (Boolean) -> Unit) {
+        val isSwipe = step.kind == "SWIPE"
+        val path = Path()
+        val dur: Long
+        if (isSwipe) {
+            path.moveTo(step.x, step.y)
+            path.lineTo(step.x2, step.y2)
+            dur = step.duration.coerceIn(80L, 3000L)
+        } else {
+            path.moveTo(step.x, step.y)
+            dur = 70L
+        }
+
+        val stroke = if (isSwipe && suppressFling && Build.VERSION.SDK_INT >= 26) {
+            GestureDescription.StrokeDescription(path, 0, dur, true)
+        } else {
+            GestureDescription.StrokeDescription(path, 0, dur)
+        }
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+
+        val accepted = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                if (isSwipe && suppressFling && Build.VERSION.SDK_INT >= 26) {
+                    holdSwipeEnd(stroke, step.x2, step.y2, done)
+                } else {
+                    done(true)
+                }
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription?) { done(false) }
+        }, null)
+        if (!accepted) done(false)
+    }
+
+    /** انگشت در نقطه‌ی پایان کمی ثابت می‌ماند و بعد رها می‌شود تا fling رخ ندهد */
+    @android.annotation.TargetApi(26)
+    private fun holdSwipeEnd(first: GestureDescription.StrokeDescription, x: Float, y: Float, done: (Boolean) -> Unit) {
+        val holdPath = Path().apply { moveTo(x, y) }
+        val second = first.continueStroke(holdPath, 0L, scrollHoldDuration, false)
+        val gesture = GestureDescription.Builder().addStroke(second).build()
+        val ok = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) { done(true) }
+            // کشیدن اصلی انجام شده؛ تکرار نمی‌کنیم
+            override fun onCancelled(gestureDescription: GestureDescription?) { done(true) }
+        }, null)
+        if (!ok) done(true)
+    }
+
+    // ======================= پخش =======================
 
     private fun currentPackage(): String? {
         val root = rootInActiveWindow ?: return null
         return try { root.packageName?.toString() } finally { root.recycle() }
     }
 
-    /** پخش را متوقف می‌کند و پیام می‌دهد (به‌جای رد شدن از مرحله) */
+    /** پخش را متوقف می‌کند و پیام می‌دهد (هیچ مرحله‌ای رد نمی‌شود) */
     private fun failPlayback(message: String) {
         stopPlayback()
         status?.text = message
     }
 
-    /**
-     * منتظر می‌ماند تا حداقل [minWait] بگذرد و صفحه آرام شود
-     * (بدون تغییر UI به مدت settleQuiet)، با سقف settleMax.
-     */
+    /** منتظر می‌ماند تا حداقل minWait بگذرد و صفحه آرام شود (با سقف settleMax) */
     private fun waitForSettle(session: Int, minWait: Long, onReady: () -> Unit) {
         val startedAt = System.currentTimeMillis()
         val poll = object : Runnable {
@@ -606,61 +736,24 @@ class MacroAccessibilityService : AccessibilityService() {
                 if (elapsed >= settleMax || (elapsed >= minWait && idle >= settleQuiet)) {
                     onReady()
                 } else {
-                    handler.postDelayed(this, 40L)
+                    handler.postDelayed(this, 25L)
                 }
             }
         }
-        handler.postDelayed(poll, 40L)
+        handler.postDelayed(poll, 25L)
     }
 
-    /** بعد از اجرای هر مرحله: انتظار برای آرام شدن صفحه، سپس مرحله‌ی بعد */
     private fun afterAction(kind: String, index: Int, session: Int) {
         lastUiChangeAt = System.currentTimeMillis()
         val base = when (kind) {
-            "SCROLL" -> scrollSettleMin
+            "SWIPE" -> swipeSettleMin
             "BACK" -> backSettleMin
             else -> tapSettleMin
         }
-        val minWait = (base / playbackSpeed).toLong().coerceIn(40L, 2000L)
+        val minWait = (base / playbackSpeed).toLong().coerceIn(30L, 2000L)
         waitForSettle(session, minWait) {
             if (hasValidLicense() && playing && session == playbackToken) runStep(index + 1, session, 0)
         }
-    }
-
-    private fun finishStep(kind: String, index: Int, session: Int, attempt: Long) {
-        if (attempt != currentAttempt) return
-        disarmWatchdog()
-        measuringScroll = false
-        inCorrection = false
-        if (!playing || session != playbackToken) return
-        afterAction(kind, index, session)
-    }
-
-    /**
-     * بعد از اسکرول، مقدار واقعی اسکرول (با همان روشی که ضبط شد) اندازه‌گیری می‌شود.
-     * اگر با مقدار ضبط‌شده فرق داشت، همان اختلاف با یک کشیدن کوچک جبران می‌شود.
-     * تعداد و ترتیب مراحل تغییر نمی‌کند؛ تصحیح بخشی از همان مرحله است.
-     */
-    private fun verifyScroll(step: Step, index: Int, session: Int, attempt: Long) {
-        if (attempt != currentAttempt) return
-        disarmWatchdog()
-        if (!playing || session != playbackToken) return
-        if (Build.VERSION.SDK_INT < 28 || !measuringScroll || scrollTarget == 0 || scrollCorrections >= maxScrollCorrections) {
-            finishStep(step.kind, index, session, attempt)
-            return
-        }
-        handler.postDelayed({
-            if (!playing || session != playbackToken || attempt != currentAttempt) return@postDelayed
-            val remaining = scrollTarget - measuredScrollY
-            val tolerance = max(scrollTolerancePx, abs(scrollTarget) / 50)
-            if (scrollEventsSeen == 0 || abs(remaining) <= tolerance) {
-                finishStep(step.kind, index, session, attempt)
-            } else {
-                scrollCorrections++
-                inCorrection = true
-                dispatchStep(step.copy(scrollDeltaY = remaining), index, session, 0, 0)
-            }
-        }, scrollVerifyWait)
     }
 
     private fun runNext(session: Int) {
@@ -689,8 +782,7 @@ class MacroAccessibilityService : AccessibilityService() {
         playIndex = index
         updateExecutionReport()
         val step = steps[index]
-        // سرعت فقط روی مکث قبل از هر مرحله اثر دارد؛ مسافت و مدت اسکرول ثابت است
-        val delay = (min(step.delay, maxPreStepDelay) / playbackSpeed).toLong().coerceIn(20L, 2000L)
+        val delay = (minOf(step.delay, maxPreStepDelay) / playbackSpeed).toLong().coerceIn(20L, 2000L)
         handler.postDelayed({
             if (!hasValidLicense()) { stopPlayback(); return@postDelayed }
             if (!playing || session != playbackToken) return@postDelayed
@@ -728,163 +820,31 @@ class MacroAccessibilityService : AccessibilityService() {
                     performGlobalAction(GLOBAL_ACTION_BACK)
                     afterAction("BACK", index, session)
                 }
-                "SCROLL", "TAP" -> dispatchStep(step, index, session, retry)
+                "TAP", "SWIPE" -> dispatchStep(step, index, session, retry)
                 else -> runStep(index + 1, session, 0)
             }
         }, delay)
     }
 
-    private fun dispatchStep(step: Step, index: Int, session: Int, retry: Int, part: Int = 0) {
+    private fun dispatchStep(step: Step, index: Int, session: Int, retry: Int) {
         if (!hasValidLicense()) { stopPlayback(); return }
         if (!playing || session != playbackToken) return
 
-        // مسیر سازگار با اندروید ۶
-        if (Build.VERSION.SDK_INT < 24) {
-            val root = rootInActiveWindow
-            try {
-                if (step.kind == "SCROLL") {
-                    val forward = step.scrollDeltaY >= 0
-                    val scrolled = performScrollAtPoint(root, step.x.toInt(), step.y.toInt(), forward) || performScrollOnNode(root, forward)
-                    if (!scrolled) status?.text = "این صفحه اسکرول قابل‌دسترسی ندارد"
-                } else {
-                    clickNodeAt(root, step.x.toInt(), step.y.toInt())
-                }
-            } finally { root?.recycle() }
-            afterAction(step.kind, index, session)
-            return
-        }
-
-        val screenWidth = resources.displayMetrics.widthPixels
-        val screenHeight = resources.displayMetrics.heightPixels
-        if (screenWidth < 4 || screenHeight < 4) {
-            failPlayback("ابعاد صفحه نامعتبر؛ پخش متوقف شد")
-            return
-        }
-
-        val isScroll = step.kind == "SCROLL"
-        val path = Path()
-        var gestureDuration = 70L
-        var holdX = step.x
-        var holdY = step.y
-        var parts = 1
-
-        if (!isScroll) {
-            path.moveTo(step.x, step.y)
-        } else {
-            if (part == 0 && retry == 0 && !inCorrection) {
-                scrollTarget = (step.scrollDeltaY * scrollDistanceFactor).toInt()
-                measuredScrollY = 0
-                scrollEventsSeen = 0
-                scrollCorrections = 0
-                measureX = step.x.toInt()
-                measureY = step.y.toInt()
-                measuringScroll = step.scrollDeltaY != 0
-            }
-            val left = step.left.coerceIn(0, screenWidth - 2)
-            val right = step.right.coerceIn(left + 2, screenWidth)
-            val top = step.top.coerceIn(0, screenHeight - 2)
-            val bottom = step.bottom.coerceIn(top + 2, screenHeight)
-
-            // ناحیه‌ی امن: دور از لبه‌های بالا/پایین تا ژست‌های سیستم (خانه/بازگشت) فعال نشوند
-            var safeTop = max(top + 2f, screenHeight * 0.04f)
-            var safeBottom = min(bottom - 2f, screenHeight * 0.92f)
-            if (safeBottom - safeTop < 8f) { safeTop = top + 2f; safeBottom = bottom - 2f }
-            val region = (safeBottom - safeTop).coerceAtLeast(4f)
-            val mid = (safeTop + safeBottom) / 2f
-
-            // هر لایه‌ی لیست اولین «touch slop» پیکسل حرکت انگشت را مصرف می‌کند و اسکرول نمی‌کند؛
-            // پس همان مقدار را به مسافت اضافه می‌کنیم تا اسکرول واقعی دقیقاً برابر مقدار ضبط‌شده شود.
-            val slop = ViewConfiguration.get(this).scaledTouchSlop.toFloat() * scrollSlopCompensation
-            val maxPerSwipe = (region * scrollMaxFraction).coerceAtLeast(slop + 20f)
-
-            val perSwipe: Float
-            if (step.scrollDeltaY != 0) {
-                // مجموع اسکرول ضبط‌شده؛ اگر در یک کشیدن جا نشود، چند کشیدن پشت‌سرهم انجام می‌شود
-                val total = abs(step.scrollDeltaY.toFloat()) * scrollDistanceFactor
-                parts = max(1, kotlin.math.ceil((total / (maxPerSwipe - slop)).toDouble()).toInt())
-                perSwipe = total / parts + slop
-            } else {
-                // مقدار اسکرول ضبط نشده (اندروید قدیمی‌تر از ۹)؛ مقدار تقریبی
-                perSwipe = region * 0.78f
-            }
-            val distance = perSwipe.coerceAtMost(region)
-
-            val forward = step.scrollDeltaY >= 0
-            val startY = if (forward) mid + distance / 2f else mid - distance / 2f
-            val endY = if (forward) mid - distance / 2f else mid + distance / 2f
-            val x = step.x.coerceIn(left + 2f, right - 2f).coerceIn(screenWidth * 0.08f, screenWidth * 0.92f)
-
-            path.moveTo(x, startY)
-            path.lineTo(x, endY)
-            holdX = x
-            holdY = endY
-            // مدت حرکت ثابت است تا رفتار در همه‌ی سرعت‌ها یکسان باشد
-            gestureDuration = scrollMoveDuration
-        }
-
-        val stroke = if (isScroll && Build.VERSION.SDK_INT >= 26) {
-            GestureDescription.StrokeDescription(path, 0, gestureDuration, true)
-        } else {
-            GestureDescription.StrokeDescription(path, 0, gestureDuration)
-        }
-        val gesture = GestureDescription.Builder().addStroke(stroke).build()
-
         currentAttempt++
         val attempt = currentAttempt
+        armWatchdog(step, index, session, retry, attempt, 15000L + step.duration)
 
-        armWatchdog(step, index, session, retry, part, attempt, gestureDuration + scrollHoldDuration + 15000L)
-
-        // پایان یک کشیدن: یا کشیدن بعدی (اگر چندبخشی است) یا مرحله‌ی بعد
-        val onDone: () -> Unit = {
-            if (attempt == currentAttempt) {
-                if (playing && session == playbackToken && isScroll && part + 1 < parts) {
-                    disarmWatchdog()
-                    handler.postDelayed({
-                        if (hasValidLicense() && playing && session == playbackToken) {
-                            dispatchStep(step, index, session, 0, part + 1)
-                        }
-                    }, 30L)
-                } else if (isScroll) {
-                    verifyScroll(step, index, session, attempt)
-                } else {
-                    finishStep(step.kind, index, session, attempt)
-                }
-            }
-        }
-
-        val accepted = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
-            override fun onCompleted(gestureDescription: GestureDescription?) {
-                if (attempt != currentAttempt) return
-                if (!playing || session != playbackToken) { disarmWatchdog(); return }
-                if (isScroll && Build.VERSION.SDK_INT >= 26) {
-                    dispatchScrollHold(stroke, holdX, holdY, onDone)
-                } else {
-                    onDone()
-                }
-            }
-
-            override fun onCancelled(gestureDescription: GestureDescription?) {
-                if (attempt != currentAttempt) return
-                disarmWatchdog()
-                if (!playing || session != playbackToken) return
-                if (retry < maxStepRetries) {
-                    val backoff = if (retry < 8) 400L else 1000L
-                    status?.text = "تداخل لمس؛ تلاش مجدد ${retry + 1}"
-                    handler.postDelayed({
-                        if (hasValidLicense() && playing && session == playbackToken) dispatchStep(step, index, session, retry + 1, part)
-                    }, backoff)
-                } else {
-                    failPlayback("مرحله ${index + 1} ناموفق بود؛ پخش متوقف شد")
-                }
-            }
-        }, null)
-
-        if (!accepted && attempt == currentAttempt) {
+        performStep(step) { ok ->
+            if (attempt != currentAttempt) return@performStep
             disarmWatchdog()
-            if (retry < maxStepRetries) {
+            if (!playing || session != playbackToken) return@performStep
+            if (ok) {
+                afterAction(step.kind, index, session)
+            } else if (retry < maxStepRetries) {
                 val backoff = if (retry < 8) 300L else 1000L
+                status?.text = "تداخل لمس؛ تلاش مجدد ${retry + 1}"
                 handler.postDelayed({
-                    if (hasValidLicense() && playing && session == playbackToken) dispatchStep(step, index, session, retry + 1, part)
+                    if (hasValidLicense() && playing && session == playbackToken) dispatchStep(step, index, session, retry + 1)
                 }, backoff)
             } else {
                 failPlayback("مرحله ${index + 1} ناموفق بود؛ پخش متوقف شد")
@@ -892,28 +852,7 @@ class MacroAccessibilityService : AccessibilityService() {
         }
     }
 
-    /**
-     * مرحله‌ی دوم اسکرول: انگشت در نقطه‌ی پایان کمی ثابت می‌ماند و بعد رها می‌شود.
-     * این کار سرعت رهاسازی را صفر می‌کند تا fling رخ ندهد و اسکرول دقیقاً برابر مسافت حرکت باشد.
-     */
-    @android.annotation.TargetApi(26)
-    private fun dispatchScrollHold(
-        first: GestureDescription.StrokeDescription,
-        x: Float, y: Float,
-        onDone: () -> Unit
-    ) {
-        val holdPath = Path().apply { moveTo(x, y) }
-        val second = first.continueStroke(holdPath, 0L, scrollHoldDuration, false)
-        val gesture = GestureDescription.Builder().addStroke(second).build()
-        val ok = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
-            override fun onCompleted(gestureDescription: GestureDescription?) { onDone() }
-            // اسکرول در مرحله‌ی اول انجام شده؛ تکرار نمی‌کنیم
-            override fun onCancelled(gestureDescription: GestureDescription?) { onDone() }
-        }, null)
-        if (!ok) onDone()
-    }
-
-    private fun armWatchdog(step: Step, index: Int, session: Int, retry: Int, part: Int, attempt: Long, timeout: Long) {
+    private fun armWatchdog(step: Step, index: Int, session: Int, retry: Int, attempt: Long, timeout: Long) {
         disarmWatchdog()
         val r = Runnable {
             if (!playing || session != playbackToken) return@Runnable
@@ -921,7 +860,7 @@ class MacroAccessibilityService : AccessibilityService() {
             currentAttempt++
             handler.postDelayed({
                 if (!playing || session != playbackToken) return@postDelayed
-                if (retry < maxStepRetries) dispatchStep(step, index, session, retry + 1, part)
+                if (retry < maxStepRetries) dispatchStep(step, index, session, retry + 1)
                 else failPlayback("مرحله ${index + 1} ناموفق بود؛ پخش متوقف شد")
             }, 300L)
         }
@@ -932,23 +871,6 @@ class MacroAccessibilityService : AccessibilityService() {
     private fun disarmWatchdog() {
         watchdogRunnable?.let { handler.removeCallbacks(it) }
         watchdogRunnable = null
-    }
-
-    private fun dispatchTap(x: Float, y: Float, onDone: (() -> Unit)? = null) {
-        if (!hasValidLicense()) return
-        if (Build.VERSION.SDK_INT >= 24) {
-            val path = Path().apply { moveTo(x, y) }
-            val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 70L)).build()
-            dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
-                override fun onCompleted(gestureDescription: GestureDescription?) { onDone?.invoke() }
-                override fun onCancelled(gestureDescription: GestureDescription?) { onDone?.invoke() }
-            }, null)
-        } else {
-            val root = rootInActiveWindow
-            try { if (!clickNodeAt(root, x.toInt(), y.toInt())) status?.text = "این کلیک در اندروید ۶ قابل اجرا نیست" }
-            finally { root?.recycle() }
-            onDone?.invoke()
-        }
     }
 
     private fun clickNodeAt(node: AccessibilityNodeInfo?, x: Int, y: Int): Boolean {
@@ -1000,6 +922,8 @@ class MacroAccessibilityService : AccessibilityService() {
         return false
     }
 
+    // ======================= ویرایشگر =======================
+
     private fun showMacroEditor() {
         val dialog = AlertDialog.Builder(this).create()
         dialog.window?.setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
@@ -1014,8 +938,7 @@ class MacroAccessibilityService : AccessibilityService() {
         steps.forEachIndexed { index, step ->
             val stepView = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(8)); setBackgroundColor(0xFF2A2D35.toInt()) }
             val stepText = TextView(this).apply {
-                val type = when (step.kind) { "TAP" -> "کلیک"; "SCROLL" -> "اسکرول"; "BACK" -> "بازگشت"; else -> "نامشخص" }
-                text = "${index + 1}. $type"; textSize = 13f; setTextColor(0xFFFFFFFF.toInt())
+                text = "${index + 1}. ${stepTypeName(step.kind)}"; textSize = 13f; setTextColor(0xFFFFFFFF.toInt())
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }
             stepView.addView(stepText)
@@ -1068,9 +991,11 @@ class MacroAccessibilityService : AccessibilityService() {
             layout.addView(Button(this).apply {
                 text = type; textSize = 14f; setPadding(dp(16), dp(12), dp(16), dp(12))
                 setOnClickListener {
+                    val w = resources.displayMetrics.widthPixels.toFloat()
+                    val h = resources.displayMetrics.heightPixels.toFloat()
                     when (type) {
-                        "کلیک (مرکز صفحه)" -> steps.add(Step(kind = "TAP", x = (resources.displayMetrics.widthPixels / 2).toFloat(), y = (resources.displayMetrics.heightPixels / 2).toFloat(), delay = 500L))
-                        "اسکرول به پایین" -> steps.add(Step(kind = "SCROLL", x = (resources.displayMetrics.widthPixels / 2).toFloat(), y = (resources.displayMetrics.heightPixels / 2).toFloat(), delay = 500L, duration = 500L, scrollDeltaY = 500))
+                        "کلیک (مرکز صفحه)" -> steps.add(Step(kind = "TAP", x = w / 2f, y = h / 2f, delay = 500L))
+                        "اسکرول به پایین" -> steps.add(Step(kind = "SWIPE", x = w / 2f, y = h * 0.7f, x2 = w / 2f, y2 = h * 0.3f, delay = 500L, duration = 300L))
                         "دکمه بازگشت" -> steps.add(Step(kind = "BACK", delay = 500L))
                     }
                     saveMacro()
@@ -1095,6 +1020,8 @@ class MacroAccessibilityService : AccessibilityService() {
             .putInt("panel_width_dp", panelWidthDp).putInt("panel_height_dp", panelHeightDp).apply()
     }
 
+    // ======================= قفل لمس =======================
+
     private fun showTouchLock() {
         if (touchLockOverlay != null) return
         isCurrentlyLocked = true
@@ -1112,18 +1039,7 @@ class MacroAccessibilityService : AccessibilityService() {
         )
         try {
             wm.addView(touchLockOverlay, params)
-            val currentPanel = panel
-            val currentParams = panelParams
-            if (currentPanel != null && currentParams != null) {
-                wm.removeView(currentPanel)
-                wm.addView(currentPanel, currentParams)
-            }
-            val currentBubble = bubble
-            val currentBubbleParams = bubbleParams
-            if (currentBubble != null && currentBubbleParams != null) {
-                wm.removeView(currentBubble)
-                wm.addView(currentBubble, currentBubbleParams)
-            }
+            bringControlsToFront()
         } catch (_: Exception) { }
     }
 
@@ -1145,28 +1061,47 @@ class MacroAccessibilityService : AccessibilityService() {
         }
     }
 
+    // ======================= انتخاب نقطه‌ی کلیک (نوار کوچک) =======================
+
     private fun showPointPicker() {
         if (!hasValidLicense() || pointPicker != null) return
-        val root = FrameLayout(this).apply { setBackgroundColor(0x22000000) }
-        val hint = TextView(this).apply {
-            text = "برای ثبت کلیک، روی محل موردنظر بزن."; textSize = 16f; setTextColor(0xFFFFFFFF.toInt())
-            setPadding(dp(18), dp(18), dp(18), dp(18)); setBackgroundColor(0xE6202124.toInt())
+        val root = FrameLayout(this).apply { setBackgroundColor(0x14000000) }
+
+        // نوار کوچک پایین صفحه؛ دیگر جلوی دکمه‌ی بازگشت بالای صفحه را نمی‌گیرد
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(0xE6202124.toInt())
+            setPadding(dp(10), dp(2), dp(2), dp(2))
         }
-        root.addView(hint, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP))
-        val cancel = Button(this).apply {
-            text = "لغو انتخاب"
+        bar.addView(TextView(this).apply {
+            text = "محل کلیک را لمس کن"
+            textSize = 11f
+            setTextColor(0xFFFFFFFF.toInt())
+        })
+        bar.addView(Button(this).apply {
+            text = "✕"
+            textSize = 11f
+            minWidth = 0; minHeight = 0
+            minimumWidth = 0; minimumHeight = 0
+            setPadding(dp(10), dp(2), dp(10), dp(2))
             setOnClickListener { removePointPicker(); status?.text = "انتخاب لغو شد" }
-        }
-        root.addView(cancel, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END))
+        })
+        root.addView(bar, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        ).apply { bottomMargin = dp(28) })
 
         root.setOnTouchListener { _, event ->
             if (!hasValidLicense()) { removePointPicker(); return@setOnTouchListener true }
             if (event.action == MotionEvent.ACTION_UP && pointPicker === root) {
                 val x = event.rawX; val y = event.rawY
                 removePointPicker()
-                addRecordedStep(Step(kind = "TAP", x = x, y = y, delay = 350L))
-                ignoreEventsUntil = System.currentTimeMillis() + 800L
-                handler.postDelayed({ if (hasValidLicense()) dispatchTap(x, y) { status?.text = "کلیک ثبت شد" } }, 100L)
+                val now = System.currentTimeMillis()
+                val pre = if (lastEventAt == 0L) 350L else (now - lastEventAt).coerceIn(120L, 5000L)
+                val step = Step(kind = "TAP", x = x, y = y, delay = pre)
+                addRecordedStep(step)
+                replayLive(step)
                 true
             } else true
         }
@@ -1186,6 +1121,8 @@ class MacroAccessibilityService : AccessibilityService() {
         pointPicker?.let { try { wm.removeView(it) } catch (_: Exception) { } }
         pointPicker = null
     }
+
+    // ======================= سرعت / حباب =======================
 
     private fun formatSpeed(value: Float): String = String.format(java.util.Locale.US, "%.2f", value).trimEnd('0').trimEnd('.')
 
@@ -1266,6 +1203,8 @@ class MacroAccessibilityService : AccessibilityService() {
         }
     }
 
+    // ======================= توقف / ذخیره / بارگذاری =======================
+
     private fun stopPlayback() {
         val wasPlaying = playing
         playing = false
@@ -1275,8 +1214,6 @@ class MacroAccessibilityService : AccessibilityService() {
         loopCount = 0
         expectedPkg = null
         pkgMismatch = 0
-        measuringScroll = false
-        inCorrection = false
         executionReport?.visibility = View.GONE
         disarmWatchdog()
         updateKeepScreenOnFlag(false)
@@ -1286,18 +1223,22 @@ class MacroAccessibilityService : AccessibilityService() {
     }
 
     private fun stopAll() {
-        recording = false; handler.removeCallbacks(flushScrollRunnable); pendingScroll = null
-        stopPlayback(); saveMacro()
+        recording = false
+        hideCaptureOverlay()
+        removePointPicker()
+        stopPlayback()
+        saveMacro()
     }
 
     private fun saveMacro() {
-        val rootObj = JSONObject(); rootObj.put("version", 2)
+        val rootObj = JSONObject(); rootObj.put("version", 3)
         val array = JSONArray()
         steps.forEach { step ->
             array.put(JSONObject().apply {
-                put("kind", step.kind); put("x", step.x); put("y", step.y)
-                put("left", step.left); put("top", step.top); put("right", step.right); put("bottom", step.bottom)
-                put("delay", step.delay); put("duration", step.duration); put("scrollDeltaY", step.scrollDeltaY)
+                put("kind", step.kind)
+                put("x", step.x.toDouble()); put("y", step.y.toDouble())
+                put("x2", step.x2.toDouble()); put("y2", step.y2.toDouble())
+                put("delay", step.delay); put("duration", step.duration)
             })
         }
         rootObj.put("steps", array)
@@ -1313,25 +1254,42 @@ class MacroAccessibilityService : AccessibilityService() {
             } else { JSONArray(raw) }
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
-                steps.add(Step(
-                    kind = obj.getString("kind"),
-                    x = obj.optDouble("x", 0.0).toFloat(),
-                    y = obj.optDouble("y", 0.0).toFloat(),
-                    left = obj.optInt("left", 0), top = obj.optInt("top", 0),
-                    right = obj.optInt("right", 0), bottom = obj.optInt("bottom", 0),
-                    delay = obj.optLong("delay", 350L),
-                    duration = obj.optLong("duration", 0L),
-                    scrollDeltaY = obj.optInt("scrollDeltaY", 0)
-                ))
+                val kind = obj.getString("kind")
+                if (kind == "SCROLL") {
+                    // ماکروی قدیمی: به کشیدن تقریبی تبدیل می‌شود (برای دقت کامل دوباره ضبط کنید)
+                    val top = obj.optInt("top", 0)
+                    val bottom = obj.optInt("bottom", 0)
+                    val delta = obj.optInt("scrollDeltaY", 0)
+                    val h = (bottom - top).toFloat().coerceAtLeast(300f)
+                    val dist = (abs(delta).toFloat() * 0.8f).coerceIn(h * 0.3f, h * 0.8f)
+                    val cx = obj.optDouble("x", 0.0).toFloat()
+                    val cy = if (bottom > top) (top + bottom) / 2f else obj.optDouble("y", 0.0).toFloat()
+                    val forward = delta >= 0
+                    steps.add(Step(
+                        kind = "SWIPE", x = cx, y = if (forward) cy + dist / 2f else cy - dist / 2f,
+                        x2 = cx, y2 = if (forward) cy - dist / 2f else cy + dist / 2f,
+                        delay = obj.optLong("delay", 350L),
+                        duration = obj.optLong("duration", 300L).coerceIn(150L, 600L)
+                    ))
+                } else {
+                    steps.add(Step(
+                        kind = kind,
+                        x = obj.optDouble("x", 0.0).toFloat(),
+                        y = obj.optDouble("y", 0.0).toFloat(),
+                        x2 = obj.optDouble("x2", 0.0).toFloat(),
+                        y2 = obj.optDouble("y2", 0.0).toFloat(),
+                        delay = obj.optLong("delay", 350L),
+                        duration = obj.optLong("duration", 0L)
+                    ))
+                }
             }
         } catch (_: Exception) { steps.clear() }
     }
 
     private fun removePanel() {
         recording = false
+        hideCaptureOverlay()
         stopPlayback()
-        handler.removeCallbacks(flushScrollRunnable)
-        pendingScroll = null
         removePointPicker()
         hideTouchLock()
         panel?.let {
