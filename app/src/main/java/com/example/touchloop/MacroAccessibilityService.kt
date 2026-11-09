@@ -94,21 +94,24 @@ class MacroAccessibilityService : AccessibilityService() {
     private var lastUiChangeAt = 0L
 
     // حداقل زمان انتظار بعد از هر عمل (ثابت و مستقل از سرعت)
-    private val tapSettleMin = 300L
-    private val scrollSettleMin = 500L
-    private val backSettleMin = 900L
+    // (این مقادیر در سرعت ۱× هستند و با سرعت پخش کوچک/بزرگ می‌شوند)
+    private val tapSettleMin = 120L
+    private val scrollSettleMin = 150L
+    private val backSettleMin = 300L
     // اگر این مدت هیچ تغییر UI نیامد، صفحه آرام حساب می‌شود
-    private val settleQuiet = 150L
+    private val settleQuiet = 80L
     // سقف انتظار برای آرام شدن صفحه
-    private val settleMax = 2500L
+    private val settleMax = 1500L
     // مکث بین دو دور
-    private val loopGap = 1000L
+    private val loopGap = 300L
+    // سقف مکث قبل از هر مرحله (زمان ضبط‌شده شامل تأخیر انسانی است)
+    private val maxPreStepDelay = 400L
 
     // ---------- تنظیمات اسکرول (ثابت، مستقل از سرعت پخش) ----------
     // مدت حرکت انگشت
-    private val scrollMoveDuration = 450L
+    private val scrollMoveDuration = 300L
     // مکث انگشت در انتهای حرکت (برای جلوگیری از fling؛ اندروید ۸+)
-    private val scrollHoldDuration = 150L
+    private val scrollHoldDuration = 80L
     // ضریب مسافت نسبت به مقدار ضبط‌شده (۱.۰ = همان مقدار ضبط‌شده)
     private val scrollDistanceFactor = 1.0f
     // حداقل و حداکثر مسافت نسبت به ارتفاع ناحیه‌ی امن
@@ -583,11 +586,12 @@ class MacroAccessibilityService : AccessibilityService() {
     /** بعد از اجرای هر مرحله: انتظار برای آرام شدن صفحه، سپس مرحله‌ی بعد */
     private fun afterAction(kind: String, index: Int, session: Int) {
         lastUiChangeAt = System.currentTimeMillis()
-        val minWait = when (kind) {
+        val base = when (kind) {
             "SCROLL" -> scrollSettleMin
             "BACK" -> backSettleMin
             else -> tapSettleMin
         }
+        val minWait = (base / playbackSpeed).toLong().coerceIn(40L, 2000L)
         waitForSettle(session, minWait) {
             if (hasValidLicense() && playing && session == playbackToken) runStep(index + 1, session, 0)
         }
@@ -627,7 +631,7 @@ class MacroAccessibilityService : AccessibilityService() {
         updateExecutionReport()
         val step = steps[index]
         // سرعت فقط روی مکث قبل از هر مرحله اثر دارد؛ مسافت و مدت اسکرول ثابت است
-        val delay = (step.delay / playbackSpeed).toLong().coerceIn(50L, 20000L)
+        val delay = (min(step.delay, maxPreStepDelay) / playbackSpeed).toLong().coerceIn(20L, 2000L)
         handler.postDelayed({
             if (!hasValidLicense()) { stopPlayback(); return@postDelayed }
             if (!playing || session != playbackToken) return@postDelayed
