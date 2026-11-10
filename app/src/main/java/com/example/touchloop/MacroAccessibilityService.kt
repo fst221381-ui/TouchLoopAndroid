@@ -66,7 +66,12 @@ class MacroAccessibilityService : AccessibilityService() {
     private var panelWidthDp = 220
     private var panelHeightDp = 320
 
+    // سرعت انتخاب‌شده برای اجرای بعدی
     private var playbackSpeed = 1.0f
+
+    // سرعت ثابت در طول اجرای فعلی
+    private var activePlaybackSpeed = 1.0f
+
     private var speedLabel: TextView? = null
     private var status: TextView? = null
     private var executionReport: TextView? = null
@@ -77,7 +82,7 @@ class MacroAccessibilityService : AccessibilityService() {
     private val minPanelWidthDp = 140
     private val minPanelHeightDp = 180
 
-    private val maxStepRetries = 20
+    private val maxStepRetries = 3
     private var watchdogRunnable: Runnable? = null
     private var currentAttempt = 0L
 
@@ -90,9 +95,11 @@ class MacroAccessibilityService : AccessibilityService() {
     private val backSettleMin = 80L
     private val settleQuiet = 20L
     private val settleMax = 500L
-    private val loopGap = 50L
-    private val maxPreStepDelay = 80L
 
+    // مکث اضافه بین دورها حذف شده است؛ تأخیر مرحله اول اعمال می‌شود.
+    private val loopGap = 0L
+
+    // تأخیر واقعی ضبط‌شده نباید به ۸۰ میلی‌ثانیه محدود شود.
     private val suppressFling = true
     private val scrollHoldDuration = 60L
 
@@ -134,6 +141,16 @@ class MacroAccessibilityService : AccessibilityService() {
 
     private fun isScreenOn(): Boolean =
         powerManager?.isInteractive ?: true
+
+    private fun scaledTime(
+        original: Long,
+        speed: Float = activePlaybackSpeed,
+        minimum: Long = 1L
+    ): Long {
+        return (original / speed.coerceIn(0.25f, 8.0f))
+            .toLong()
+            .coerceAtLeast(minimum)
+    }
 
     private fun hasValidLicense(): Boolean {
         if (isLicenseBlocked) return false
@@ -597,7 +614,12 @@ class MacroAccessibilityService : AccessibilityService() {
             if (!hasValidLicense()) return@button
 
             if (recording && !playing) {
-                addRecordedStep(Step(kind = "BACK"))
+                addRecordedStep(
+                    Step(
+                        kind = "BACK",
+                        delay = calculateManualDelay()
+                    )
+                )
                 performGlobalAction(GLOBAL_ACTION_BACK)
             } else if (playing) {
                 status?.text = "برای توقف، Stop را بزن"
@@ -637,11 +659,17 @@ class MacroAccessibilityService : AccessibilityService() {
                 loopCount = 1
                 playing = true
                 playIndex = 0
+
+                // سرعت در طول اجرای فعلی ثابت می‌ماند.
+                activePlaybackSpeed = playbackSpeed
+
                 expectedPkg = currentPackage()
                 pkgMismatch = 0
                 lastUiChangeAt = System.currentTimeMillis()
 
-                status?.text = "در حال پخش…"
+                status?.text =
+                    "در حال پخش با سرعت ${formatSpeed(activePlaybackSpeed)}×"
+
                 updateExecutionReport()
                 executionReport?.visibility = View.VISIBLE
 
@@ -708,8 +736,13 @@ class MacroAccessibilityService : AccessibilityService() {
         speedRow.addView(
             button("−") {
                 playbackSpeed =
-                    (playbackSpeed / 1.25f).coerceAtLeast(0.25f)
+                    (playbackSpeed / 2f).coerceAtLeast(0.25f)
                 updateSpeedLabel()
+
+                if (playing) {
+                    status?.text =
+                        "سرعت جدید از اجرای بعدی اعمال می‌شود"
+                }
             },
             LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
@@ -726,8 +759,13 @@ class MacroAccessibilityService : AccessibilityService() {
         speedRow.addView(
             button("+") {
                 playbackSpeed =
-                    (playbackSpeed * 1.25f).coerceAtMost(8.0f)
+                    (playbackSpeed * 2f).coerceAtMost(8.0f)
                 updateSpeedLabel()
+
+                if (playing) {
+                    status?.text =
+                        "سرعت جدید از اجرای بعدی اعمال می‌شود"
+                }
             },
             LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
@@ -745,7 +783,6 @@ class MacroAccessibilityService : AccessibilityService() {
         })
 
         scrollView.addView(contentContainer)
-
         root.addView(header)
 
         root.addView(
@@ -859,6 +896,15 @@ class MacroAccessibilityService : AccessibilityService() {
         } catch (_: Exception) {
             panel = null
             panelParams = null
+        }
+    }
+
+    private fun calculateManualDelay(): Long {
+        val now = System.currentTimeMillis()
+        return if (lastEventAt == 0L) {
+            350L
+        } else {
+            (now - lastEventAt).coerceIn(0L, 5000L)
         }
     }
 
@@ -990,14 +1036,7 @@ class MacroAccessibilityService : AccessibilityService() {
                 capMaxDist = 0f
                 capMulti = false
 
-                val now = System.currentTimeMillis()
-
-                capPreDelay =
-                    if (lastEventAt == 0L) {
-                        350L
-                    } else {
-                        (now - lastEventAt).coerceIn(120L, 5000L)
-                    }
+                capPreDelay = calculateManualDelay()
             }
 
             MotionEvent.ACTION_POINTER_DOWN -> {
@@ -1059,20 +1098,14 @@ class MacroAccessibilityService : AccessibilityService() {
                     }
 
                 addRecordedStep(step)
-
-                // اصلاح: بدون مکث اولیه ۸۰ میلی‌ثانیه‌ای.
                 replayLive(step)
             }
-
-            else -> Unit
         }
     }
 
     private fun replayLive(step: Step) {
         setCaptureTouchable(false)
 
-        // به‌جای postDelayed با تأخیر ۸۰ میلی‌ثانیه، کار را در صف
-        // اصلی قرار می‌دهیم تا حرکت در اولین فرصت اجرا شود.
         handler.post {
             if (!hasValidLicense() || !recording) {
                 setCaptureTouchable(true)
@@ -1098,6 +1131,11 @@ class MacroAccessibilityService : AccessibilityService() {
         liveCapture: Boolean = false,
         done: (Boolean) -> Unit
     ) {
+        if (!hasValidLicense()) {
+            done(false)
+            return
+        }
+
         if (Build.VERSION.SDK_INT >= 24) {
             performTouchStep(step, liveCapture, done)
             return
@@ -1121,16 +1159,24 @@ class MacroAccessibilityService : AccessibilityService() {
                 if (!ok) {
                     status?.text = "این صفحه اسکرول قابل‌دسترسی ندارد"
                 }
+
+                done(ok)
             } else {
-                if (!clickNodeAt(root, step.x.toInt(), step.y.toInt())) {
+                val ok = clickNodeAt(
+                    root,
+                    step.x.toInt(),
+                    step.y.toInt()
+                )
+
+                if (!ok) {
                     status?.text = "این کلیک در اندروید ۶ قابل اجرا نیست"
                 }
+
+                done(ok)
             }
         } finally {
             root?.recycle()
         }
-
-        done(true)
     }
 
     @android.annotation.TargetApi(24)
@@ -1145,19 +1191,29 @@ class MacroAccessibilityService : AccessibilityService() {
         val duration: Long
 
         if (isSwipe) {
-            // مسیر و مختصات در تمام سرعت‌های پخش ثابت می‌مانند.
+            // مختصات در تمام سرعت‌ها ثابت است؛ فقط زمان تغییر می‌کند.
             path.moveTo(step.x, step.y)
             path.lineTo(step.x2, step.y2)
 
-            // مدت حرکت مستقل از سرعت پخش است.
-            duration = step.duration.coerceIn(80L, 3000L)
+            duration = if (liveCapture) {
+                step.duration.coerceIn(80L, 3000L)
+            } else {
+                scaledTime(
+                    step.duration.coerceIn(80L, 3000L),
+                    activePlaybackSpeed,
+                    20L
+                )
+            }
         } else {
             path.moveTo(step.x, step.y)
-            duration = 70L
+
+            duration = if (liveCapture) {
+                70L
+            } else {
+                scaledTime(70L, activePlaybackSpeed, 20L)
+            }
         }
 
-        // در ضبط زنده، حرکت انتهایی اضافه اجرا نمی‌شود؛ این کار مکث
-        // بعد از اسکرول را کاهش می‌دهد. در پخش معمولی، مهار fling حفظ می‌شود.
         val shouldHoldEnd =
             isSwipe &&
                 suppressFling &&
@@ -1195,6 +1251,11 @@ class MacroAccessibilityService : AccessibilityService() {
                             stroke,
                             step.x2,
                             step.y2,
+                            scaledTime(
+                                scrollHoldDuration,
+                                activePlaybackSpeed,
+                                1L
+                            ),
                             done
                         )
                     } else {
@@ -1219,18 +1280,24 @@ class MacroAccessibilityService : AccessibilityService() {
         first: GestureDescription.StrokeDescription,
         x: Float,
         y: Float,
+        holdDuration: Long,
         done: (Boolean) -> Unit
     ) {
         val holdPath = Path().apply {
             moveTo(x, y)
         }
 
-        val second = first.continueStroke(
-            holdPath,
-            0L,
-            scrollHoldDuration,
-            false
-        )
+        val second = try {
+            first.continueStroke(
+                holdPath,
+                0L,
+                holdDuration.coerceAtLeast(1L),
+                false
+            )
+        } catch (_: Exception) {
+            done(true)
+            return
+        }
 
         val gesture = GestureDescription.Builder()
             .addStroke(second)
@@ -1257,7 +1324,7 @@ class MacroAccessibilityService : AccessibilityService() {
         if (!accepted) done(true)
     }
 
-    // ======================= پخش =======================
+    // ======================= پخش ترتیبی =======================
 
     private fun currentPackage(): String? {
         val root = rootInActiveWindow ?: return null
@@ -1318,9 +1385,11 @@ class MacroAccessibilityService : AccessibilityService() {
             else -> tapSettleMin
         }
 
-        val minWait = (base / playbackSpeed)
-            .toLong()
-            .coerceAtLeast(15L)
+        val minWait = scaledTime(
+            base,
+            activePlaybackSpeed,
+            5L
+        )
 
         waitForSettle(session, minWait) {
             if (
@@ -1328,6 +1397,7 @@ class MacroAccessibilityService : AccessibilityService() {
                 playing &&
                 session == playbackToken
             ) {
+                // مرحله بعد فقط بعد از پایان کامل مرحله فعلی شروع می‌شود.
                 runStep(index + 1, session, 0)
             }
         }
@@ -1357,6 +1427,7 @@ class MacroAccessibilityService : AccessibilityService() {
         if (index >= steps.size) {
             loopCount++
             playIndex = 0
+            updateExecutionReport()
 
             handler.postDelayed({
                 if (
@@ -1376,9 +1447,12 @@ class MacroAccessibilityService : AccessibilityService() {
 
         val step = steps[index]
 
-        val delay = (
-            minOf(step.delay, maxPreStepDelay) / playbackSpeed
-        ).toLong().coerceAtLeast(0L)
+        // تأخیر واقعی ضبط‌شده؛ بدون سقف مصنوعی ۸۰ میلی‌ثانیه.
+        val delay = scaledTime(
+            step.delay.coerceAtLeast(0L),
+            activePlaybackSpeed,
+            0L
+        )
 
         handler.postDelayed({
             if (!hasValidLicense()) {
@@ -1431,8 +1505,20 @@ class MacroAccessibilityService : AccessibilityService() {
 
             when (step.kind) {
                 "BACK" -> {
-                    performGlobalAction(GLOBAL_ACTION_BACK)
-                    afterAction("BACK", index, session)
+                    val accepted =
+                        performGlobalAction(GLOBAL_ACTION_BACK)
+
+                    if (accepted) {
+                        afterAction("BACK", index, session)
+                    } else if (retry < maxStepRetries) {
+                        handler.postDelayed({
+                            if (playing && session == playbackToken) {
+                                runStep(index, session, retry + 1)
+                            }
+                        }, scaledTime(100L, activePlaybackSpeed, 10L))
+                    } else {
+                        failPlayback("اجرای مرحله بازگشت ناموفق بود")
+                    }
                 }
 
                 "TAP", "SWIPE" -> {
@@ -1483,10 +1569,13 @@ class MacroAccessibilityService : AccessibilityService() {
             if (ok) {
                 afterAction(step.kind, index, session)
             } else if (retry < maxStepRetries) {
-                val backoff =
-                    if (retry < 8) 300L else 1000L
+                val backoff = scaledTime(
+                    if (retry < 2) 120L else 300L,
+                    activePlaybackSpeed,
+                    20L
+                )
 
-                status?.text = "تداخل لمس؛ تلاش مجدد ${retry + 1}"
+                status?.text = "تلاش مجدد مرحله ${index + 1}"
 
                 handler.postDelayed({
                     if (
@@ -1528,6 +1617,7 @@ class MacroAccessibilityService : AccessibilityService() {
             if (attempt != currentAttempt) return@Runnable
 
             currentAttempt++
+            disarmWatchdog()
 
             handler.postDelayed({
                 if (!playing || session != playbackToken) {
@@ -1546,7 +1636,7 @@ class MacroAccessibilityService : AccessibilityService() {
                         "مرحله ${index + 1} ناموفق بود؛ پخش متوقف شد"
                     )
                 }
-            }, 300L)
+            }, scaledTime(100L, activePlaybackSpeed, 20L))
         }
 
         watchdogRunnable = runnable
@@ -2045,20 +2135,11 @@ class MacroAccessibilityService : AccessibilityService() {
 
                 removePointPicker()
 
-                val now = System.currentTimeMillis()
-
-                val pre =
-                    if (lastEventAt == 0L) {
-                        350L
-                    } else {
-                        (now - lastEventAt).coerceIn(120L, 5000L)
-                    }
-
                 val step = Step(
                     kind = "TAP",
                     x = x,
                     y = y,
-                    delay = pre
+                    delay = calculateManualDelay()
                 )
 
                 addRecordedStep(step)
@@ -2405,7 +2486,7 @@ class MacroAccessibilityService : AccessibilityService() {
                             duration = obj.optLong(
                                 "duration",
                                 300L
-                            ).coerceIn(150L, 600L)
+                            ).coerceIn(80L, 3000L)
                         )
                     )
                 } else {
@@ -2416,8 +2497,10 @@ class MacroAccessibilityService : AccessibilityService() {
                             y = obj.optDouble("y", 0.0).toFloat(),
                             x2 = obj.optDouble("x2", 0.0).toFloat(),
                             y2 = obj.optDouble("y2", 0.0).toFloat(),
-                            delay = obj.optLong("delay", 350L),
+                            delay = obj.optLong("delay", 350L)
+                                .coerceIn(0L, 5000L),
                             duration = obj.optLong("duration", 0L)
+                                .coerceIn(0L, 3000L)
                         )
                     )
                 }
