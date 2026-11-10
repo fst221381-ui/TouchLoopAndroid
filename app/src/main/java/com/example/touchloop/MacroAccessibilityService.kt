@@ -145,15 +145,15 @@ class MacroAccessibilityService : AccessibilityService() {
         powerManager?.isInteractive ?: true
 
     private fun scaledTime(
-        original: Long,
-        speed: Float = activePlaybackSpeed,
-        minimum: Long = 1L
-    ): Long {
-        if (original <= 0L) return 0L
+    original: Long,
+    speed: Float = activePlaybackSpeed,
+    minimum: Long = 1L
+): Long {
+    if (original <= 0L) return 0L
 
-        return (original / speed.coerceIn(0.25f, 8.0f))
-            .toLong()
-            .coerceAtLeast(minimum)
+    return (original / speed.coerceIn(0.25f, 20.0f))
+        .toLong()
+        .coerceAtLeast(minimum)
     }
 
     private fun hasValidLicense(): Boolean {
@@ -306,20 +306,52 @@ class MacroAccessibilityService : AccessibilityService() {
 
         playbackSpeed = prefs
             .getFloat("playback_speed", 1.0f)
-            .coerceIn(0.25f, 8.0f)
+            .coerceIn(0.25f, 30.0f)
 
-        panelWidthDp = prefs
-            .getInt("panel_width_dp", 220)
-            .coerceIn(minPanelWidthDp, 450)
+        speedRow.addView(
+    button("−") {
+        playbackSpeed =
+            (playbackSpeed - 0.25f).coerceAtLeast(0.25f)
 
-        panelHeightDp = prefs
-            .getInt("panel_height_dp", 320)
-            .coerceIn(minPanelHeightDp, 800)
-
-        showPanel()
         updateSpeedLabel()
-        schedulePeriodicCheck()
-    }
+
+        if (playing) {
+            status?.text = "سرعت جدید از اجرای بعدی اعمال می‌شود"
+        }
+    },
+    LinearLayout.LayoutParams(
+        0,
+        LinearLayout.LayoutParams.WRAP_CONTENT,
+        1f
+    )
+)
+
+speedRow.addView(
+    speedLabel,
+    LinearLayout.LayoutParams(
+        0,
+        LinearLayout.LayoutParams.WRAP_CONTENT,
+        1.5f
+    )
+)
+
+speedRow.addView(
+    button("+") {
+        playbackSpeed =
+            (playbackSpeed + 0.25f).coerceAtMost(20.0f)
+
+        updateSpeedLabel()
+
+        if (playing) {
+            status?.text = "سرعت جدید از اجرای بعدی اعمال می‌شود"
+        }
+    },
+    LinearLayout.LayoutParams(
+        0,
+        LinearLayout.LayoutParams.WRAP_CONTENT,
+        1f
+    )
+)
 
     private fun schedulePeriodicCheck() {
         handler.postDelayed(object : Runnable {
@@ -1351,11 +1383,7 @@ class MacroAccessibilityService : AccessibilityService() {
         val step = steps[index]
 
         // زمان انتظار ضبط‌شده با ضریب سرعت تقسیم می‌شود.
-        val delay = scaledTime(
-            step.delay.coerceAtLeast(0L),
-            activePlaybackSpeed,
-            0L
-        )
+        val delay = 0L
 
         handler.postDelayed({
             if (!hasValidLicense()) {
