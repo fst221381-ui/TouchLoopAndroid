@@ -66,10 +66,7 @@ class MacroAccessibilityService : AccessibilityService() {
     private var panelWidthDp = 220
     private var panelHeightDp = 320
 
-    // سرعت انتخاب‌شده برای اجرای بعدی
     private var playbackSpeed = 1.0f
-
-    // سرعت ثابت در طول اجرای فعلی
     private var activePlaybackSpeed = 1.0f
 
     private var speedLabel: TextView? = null
@@ -90,20 +87,23 @@ class MacroAccessibilityService : AccessibilityService() {
     private var pkgMismatch = 0
     private var lastUiChangeAt = 0L
 
-    private val tapSettleMin = 25L
-    private val swipeSettleMin = 35L
-    private val backSettleMin = 80L
-    private val settleQuiet = 20L
-    private val settleMax = 500L
+    // مکث کوتاه برای پایدارشدن رابط کاربری پس از هر مرحله
+    private val tapSettleMin = 2L
+    private val swipeSettleMin = 3L
+    private val backSettleMin = 15L
+    private val settleQuiet = 12L
+    private val settleMax = 250L
 
-    // مکث اضافه بین دورها حذف شده است؛ تأخیر مرحله اول اعمال می‌شود.
+    // فاصله اضافی بین دورهای ماکرو
     private val loopGap = 0L
 
-    // تأخیر واقعی ضبط‌شده نباید به ۸۰ میلی‌ثانیه محدود شود.
     private val suppressFling = true
-    private val scrollHoldDuration = 60L
+    private val scrollHoldDuration = 30L
 
-    // تنظیمات ضبط لمس
+    // حداقل مدت ژست اسکرول؛ مختصات با سرعت تغییر نمی‌کنند.
+    private val minSwipeDuration = 40L
+    private val maxSwipeDuration = 3000L
+
     private var captureOverlay: View? = null
     private var captureParams: WindowManager.LayoutParams? = null
     private var capDownX = 0f
@@ -147,6 +147,8 @@ class MacroAccessibilityService : AccessibilityService() {
         speed: Float = activePlaybackSpeed,
         minimum: Long = 1L
     ): Long {
+        if (original <= 0L) return 0L
+
         return (original / speed.coerceIn(0.25f, 8.0f))
             .toLong()
             .coerceAtLeast(minimum)
@@ -660,7 +662,6 @@ class MacroAccessibilityService : AccessibilityService() {
                 playing = true
                 playIndex = 0
 
-                // سرعت در طول اجرای فعلی ثابت می‌ماند.
                 activePlaybackSpeed = playbackSpeed
 
                 expectedPkg = currentPackage()
@@ -1141,7 +1142,7 @@ class MacroAccessibilityService : AccessibilityService() {
             return
         }
 
-        // اندروید ۶: اسکرول از طریق گره‌های دسترس‌پذیری
+        // اندروید ۶: استفاده از گره‌های دسترس‌پذیری
         val root = rootInActiveWindow
 
         try {
@@ -1161,6 +1162,8 @@ class MacroAccessibilityService : AccessibilityService() {
                 }
 
                 done(ok)
+            } else if (step.kind == "BACK") {
+                done(performGlobalAction(GLOBAL_ACTION_BACK))
             } else {
                 val ok = clickNodeAt(
                     root,
@@ -1185,24 +1188,37 @@ class MacroAccessibilityService : AccessibilityService() {
         liveCapture: Boolean,
         done: (Boolean) -> Unit
     ) {
+        // محافظت در برابر اجرای دوباره callback
+        var finished = false
+
+        fun finishOnce(success: Boolean) {
+            if (finished) return
+            finished = true
+            done(success)
+        }
+
         val isSwipe = step.kind == "SWIPE"
         val path = Path()
 
         val duration: Long
 
         if (isSwipe) {
-            // مختصات در تمام سرعت‌ها ثابت است؛ فقط زمان تغییر می‌کند.
+            // مهم: مختصات در تمام سرعت‌ها ثابت هستند.
             path.moveTo(step.x, step.y)
             path.lineTo(step.x2, step.y2)
 
+            val recordedDuration =
+                step.duration.coerceIn(80L, maxSwipeDuration)
+
             duration = if (liveCapture) {
-                step.duration.coerceIn(80L, 3000L)
+                recordedDuration
             } else {
+                // فقط مدت حرکت کوتاه می‌شود؛ مسافت تغییر نمی‌کند.
                 scaledTime(
-                    step.duration.coerceIn(80L, 3000L),
+                    recordedDuration,
                     activePlaybackSpeed,
-                    20L
-                )
+                    minSwipeDuration
+                ).coerceAtMost(maxSwipeDuration)
             }
         } else {
             path.moveTo(step.x, step.y)
@@ -1210,7 +1226,11 @@ class MacroAccessibilityService : AccessibilityService() {
             duration = if (liveCapture) {
                 70L
             } else {
-                scaledTime(70L, activePlaybackSpeed, 20L)
+                scaledTime(
+                    70L,
+                    activePlaybackSpeed,
+                    20L
+                )
             }
         }
 
@@ -1224,14 +1244,14 @@ class MacroAccessibilityService : AccessibilityService() {
             if (shouldHoldEnd) {
                 GestureDescription.StrokeDescription(
                     path,
-                    0,
+                    0L,
                     duration,
                     true
                 )
             } else {
                 GestureDescription.StrokeDescription(
                     path,
-                    0,
+                    0L,
                     duration
                 )
             }
@@ -1251,28 +1271,25 @@ class MacroAccessibilityService : AccessibilityService() {
                             stroke,
                             step.x2,
                             step.y2,
-                            scaledTime(
-                                scrollHoldDuration,
-                                activePlaybackSpeed,
-                                1L
-                            ),
-                            done
+                            // نگه‌داشتن انتهای اسکرول کوتاه است.
+                            scrollHoldDuration,
+                            ::finishOnce
                         )
                     } else {
-                        done(true)
+                        finishOnce(true)
                     }
                 }
 
                 override fun onCancelled(
                     gestureDescription: GestureDescription?
                 ) {
-                    done(false)
+                    finishOnce(false)
                 }
             },
             null
         )
 
-        if (!accepted) done(false)
+        if (!accepted) finishOnce(false)
     }
 
     @android.annotation.TargetApi(26)
@@ -1283,6 +1300,14 @@ class MacroAccessibilityService : AccessibilityService() {
         holdDuration: Long,
         done: (Boolean) -> Unit
     ) {
+        var finished = false
+
+        fun finishOnce(success: Boolean) {
+            if (finished) return
+            finished = true
+            done(success)
+        }
+
         val holdPath = Path().apply {
             moveTo(x, y)
         }
@@ -1295,7 +1320,8 @@ class MacroAccessibilityService : AccessibilityService() {
                 false
             )
         } catch (_: Exception) {
-            done(true)
+            // حرکت اصلی کامل شده است؛ ادامه اختیاری بود.
+            finishOnce(true)
             return
         }
 
@@ -1309,19 +1335,19 @@ class MacroAccessibilityService : AccessibilityService() {
                 override fun onCompleted(
                     gestureDescription: GestureDescription?
                 ) {
-                    done(true)
+                    finishOnce(true)
                 }
 
                 override fun onCancelled(
                     gestureDescription: GestureDescription?
                 ) {
-                    done(true)
+                    finishOnce(true)
                 }
             },
             null
         )
 
-        if (!accepted) done(true)
+        if (!accepted) finishOnce(true)
     }
 
     // ======================= پخش ترتیبی =======================
@@ -1362,12 +1388,12 @@ class MacroAccessibilityService : AccessibilityService() {
                 ) {
                     onReady()
                 } else {
-                    handler.postDelayed(this, 15L)
+                    handler.postDelayed(this, 5L)
                 }
             }
         }
 
-        handler.postDelayed(poll, 15L)
+        handler.post(poll)
     }
 
     private fun afterAction(
@@ -1388,7 +1414,7 @@ class MacroAccessibilityService : AccessibilityService() {
         val minWait = scaledTime(
             base,
             activePlaybackSpeed,
-            5L
+            1L
         )
 
         waitForSettle(session, minWait) {
@@ -1397,7 +1423,6 @@ class MacroAccessibilityService : AccessibilityService() {
                 playing &&
                 session == playbackToken
             ) {
-                // مرحله بعد فقط بعد از پایان کامل مرحله فعلی شروع می‌شود.
                 runStep(index + 1, session, 0)
             }
         }
@@ -1447,7 +1472,7 @@ class MacroAccessibilityService : AccessibilityService() {
 
         val step = steps[index]
 
-        // تأخیر واقعی ضبط‌شده؛ بدون سقف مصنوعی ۸۰ میلی‌ثانیه.
+        // سرعت در این بخش فقط زمان انتظار پیش از مرحله را تنظیم می‌کند.
         val delay = scaledTime(
             step.delay.coerceAtLeast(0L),
             activePlaybackSpeed,
@@ -1558,8 +1583,10 @@ class MacroAccessibilityService : AccessibilityService() {
         )
 
         performStep(step) { ok ->
+            // نتیجه‌های دیررس یا تکراری نادیده گرفته می‌شوند.
             if (attempt != currentAttempt) return@performStep
 
+            currentAttempt++
             disarmWatchdog()
 
             if (!playing || session != playbackToken) {
@@ -1616,27 +1643,28 @@ class MacroAccessibilityService : AccessibilityService() {
 
             if (attempt != currentAttempt) return@Runnable
 
+            // باطل‌کردن نتیجه دیررس ژست قبلی
             currentAttempt++
             disarmWatchdog()
 
-            handler.postDelayed({
-                if (!playing || session != playbackToken) {
-                    return@postDelayed
-                }
+            if (retry < maxStepRetries) {
+                handler.postDelayed({
+                    if (!playing || session != playbackToken) {
+                        return@postDelayed
+                    }
 
-                if (retry < maxStepRetries) {
                     dispatchStep(
                         step,
                         index,
                         session,
                         retry + 1
                     )
-                } else {
-                    failPlayback(
-                        "مرحله ${index + 1} ناموفق بود؛ پخش متوقف شد"
-                    )
-                }
-            }, scaledTime(100L, activePlaybackSpeed, 20L))
+                }, scaledTime(100L, activePlaybackSpeed, 20L))
+            } else {
+                failPlayback(
+                    "مرحله ${index + 1} ناموفق بود؛ پخش متوقف شد"
+                )
+            }
         }
 
         watchdogRunnable = runnable
