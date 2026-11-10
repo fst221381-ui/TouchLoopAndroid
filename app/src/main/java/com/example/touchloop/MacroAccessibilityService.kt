@@ -87,21 +87,23 @@ class MacroAccessibilityService : AccessibilityService() {
     private var pkgMismatch = 0
     private var lastUiChangeAt = 0L
 
-    // مکث کوتاه برای پایدارشدن رابط کاربری پس از هر مرحله
-    private val tapSettleMin = 2L
-    private val swipeSettleMin = 3L
-    private val backSettleMin = 15L
-    private val settleQuiet = 12L
-    private val settleMax = 250L
+    // مکث ثابت پس از مراحل حذف شده است.
+    // مرحله بعد پس از دریافت نتیجه اجرای مرحله فعلی شروع می‌شود.
+    private val tapSettleMin = 0L
+    private val swipeSettleMin = 0L
+    private val backSettleMin = 0L
+    private val settleQuiet = 0L
+    private val settleMax = 0L
 
-    // فاصله اضافی بین دورهای ماکرو
+    // بدون فاصله اضافی بین دورهای ماکرو
     private val loopGap = 0L
 
-    private val suppressFling = true
-    private val scrollHoldDuration = 30L
+    // ژست دوم برای نگه‌داشتن انتهای اسکرول غیرفعال است.
+    private val suppressFling = false
+    private val scrollHoldDuration = 0L
 
-    // حداقل مدت ژست اسکرول؛ مختصات با سرعت تغییر نمی‌کنند.
-    private val minSwipeDuration = 40L
+    // سرعت فقط مدت حرکت را تغییر می‌دهد، نه مختصات یا مسافت را.
+    private val minSwipeDuration = 5L
     private val maxSwipeDuration = 3000L
 
     private var captureOverlay: View? = null
@@ -1119,7 +1121,8 @@ class MacroAccessibilityService : AccessibilityService() {
                         setCaptureTouchable(true)
                     }
 
-                    lastEventAt = System.currentTimeMillis()
+                    // زمان آخرین رویداد هنگام ثبت مرحله تنظیم می‌شود.
+                    // اینجا آن را تغییر نمی‌دهیم تا تأخیر مصنوعی ایجاد نشود.
                 }
             }
         }
@@ -1188,7 +1191,6 @@ class MacroAccessibilityService : AccessibilityService() {
         liveCapture: Boolean,
         done: (Boolean) -> Unit
     ) {
-        // محافظت در برابر اجرای دوباره callback
         var finished = false
 
         fun finishOnce(success: Boolean) {
@@ -1203,7 +1205,7 @@ class MacroAccessibilityService : AccessibilityService() {
         val duration: Long
 
         if (isSwipe) {
-            // مهم: مختصات در تمام سرعت‌ها ثابت هستند.
+            // مختصات ثابت هستند؛ سرعت فقط مدت حرکت را تغییر می‌دهد.
             path.moveTo(step.x, step.y)
             path.lineTo(step.x2, step.y2)
 
@@ -1213,7 +1215,6 @@ class MacroAccessibilityService : AccessibilityService() {
             duration = if (liveCapture) {
                 recordedDuration
             } else {
-                // فقط مدت حرکت کوتاه می‌شود؛ مسافت تغییر نمی‌کند.
                 scaledTime(
                     recordedDuration,
                     activePlaybackSpeed,
@@ -1224,40 +1225,25 @@ class MacroAccessibilityService : AccessibilityService() {
             path.moveTo(step.x, step.y)
 
             duration = if (liveCapture) {
-                70L
+                35L
             } else {
                 scaledTime(
-                    70L,
+                    35L,
                     activePlaybackSpeed,
-                    20L
+                    8L
                 )
             }
         }
 
-        val shouldHoldEnd =
-            isSwipe &&
-                suppressFling &&
-                Build.VERSION.SDK_INT >= 26 &&
-                !liveCapture
-
-        val stroke =
-            if (shouldHoldEnd) {
-                GestureDescription.StrokeDescription(
-                    path,
-                    0L,
-                    duration,
-                    true
-                )
-            } else {
+        // ژست دوم برای نگه‌داشتن انتهای اسکرول حذف شده است.
+        val gesture = GestureDescription.Builder()
+            .addStroke(
                 GestureDescription.StrokeDescription(
                     path,
                     0L,
                     duration
                 )
-            }
-
-        val gesture = GestureDescription.Builder()
-            .addStroke(stroke)
+            )
             .build()
 
         val accepted = dispatchGesture(
@@ -1266,18 +1252,7 @@ class MacroAccessibilityService : AccessibilityService() {
                 override fun onCompleted(
                     gestureDescription: GestureDescription?
                 ) {
-                    if (shouldHoldEnd) {
-                        holdSwipeEnd(
-                            stroke,
-                            step.x2,
-                            step.y2,
-                            // نگه‌داشتن انتهای اسکرول کوتاه است.
-                            scrollHoldDuration,
-                            ::finishOnce
-                        )
-                    } else {
-                        finishOnce(true)
-                    }
+                    finishOnce(true)
                 }
 
                 override fun onCancelled(
@@ -1290,64 +1265,6 @@ class MacroAccessibilityService : AccessibilityService() {
         )
 
         if (!accepted) finishOnce(false)
-    }
-
-    @android.annotation.TargetApi(26)
-    private fun holdSwipeEnd(
-        first: GestureDescription.StrokeDescription,
-        x: Float,
-        y: Float,
-        holdDuration: Long,
-        done: (Boolean) -> Unit
-    ) {
-        var finished = false
-
-        fun finishOnce(success: Boolean) {
-            if (finished) return
-            finished = true
-            done(success)
-        }
-
-        val holdPath = Path().apply {
-            moveTo(x, y)
-        }
-
-        val second = try {
-            first.continueStroke(
-                holdPath,
-                0L,
-                holdDuration.coerceAtLeast(1L),
-                false
-            )
-        } catch (_: Exception) {
-            // حرکت اصلی کامل شده است؛ ادامه اختیاری بود.
-            finishOnce(true)
-            return
-        }
-
-        val gesture = GestureDescription.Builder()
-            .addStroke(second)
-            .build()
-
-        val accepted = dispatchGesture(
-            gesture,
-            object : AccessibilityService.GestureResultCallback() {
-                override fun onCompleted(
-                    gestureDescription: GestureDescription?
-                ) {
-                    finishOnce(true)
-                }
-
-                override fun onCancelled(
-                    gestureDescription: GestureDescription?
-                ) {
-                    finishOnce(true)
-                }
-            },
-            null
-        )
-
-        if (!accepted) finishOnce(true)
     }
 
     // ======================= پخش ترتیبی =======================
@@ -1367,34 +1284,11 @@ class MacroAccessibilityService : AccessibilityService() {
         status?.text = message
     }
 
-    private fun waitForSettle(
-        session: Int,
-        minWait: Long,
-        onReady: () -> Unit
-    ) {
-        val startedAt = System.currentTimeMillis()
-
-        val poll = object : Runnable {
-            override fun run() {
-                if (!playing || session != playbackToken) return
-
-                val now = System.currentTimeMillis()
-                val elapsed = now - startedAt
-                val idle = now - lastUiChangeAt
-
-                if (
-                    elapsed >= settleMax ||
-                    (elapsed >= minWait && idle >= settleQuiet)
-                ) {
-                    onReady()
-                } else {
-                    handler.postDelayed(this, 5L)
-                }
-            }
-        }
-
-        handler.post(poll)
-    }
+    /*
+     * تابع قبلی waitForSettle عمداً از مسیر پخش حذف شده است.
+     * انتظار برای تغییر رابط کاربری و مکث ثابت بعد از هر مرحله
+     * باعث کندی محسوس در سرعت‌های بالا می‌شد.
+     */
 
     private fun afterAction(
         kind: String,
@@ -1403,29 +1297,13 @@ class MacroAccessibilityService : AccessibilityService() {
     ) {
         if (!playing || session != playbackToken) return
 
-        lastUiChangeAt = System.currentTimeMillis()
-
-        val base = when (kind) {
-            "SWIPE" -> swipeSettleMin
-            "BACK" -> backSettleMin
-            else -> tapSettleMin
+        if (!hasValidLicense()) {
+            stopPlayback()
+            return
         }
 
-        val minWait = scaledTime(
-            base,
-            activePlaybackSpeed,
-            1L
-        )
-
-        waitForSettle(session, minWait) {
-            if (
-                hasValidLicense() &&
-                playing &&
-                session == playbackToken
-            ) {
-                runStep(index + 1, session, 0)
-            }
-        }
+        // مرحله بعد بلافاصله بعد از callback مرحله جاری شروع می‌شود.
+        runStep(index + 1, session, 0)
     }
 
     private fun runNext(session: Int) {
@@ -1472,7 +1350,7 @@ class MacroAccessibilityService : AccessibilityService() {
 
         val step = steps[index]
 
-        // سرعت در این بخش فقط زمان انتظار پیش از مرحله را تنظیم می‌کند.
+        // زمان انتظار ضبط‌شده با ضریب سرعت تقسیم می‌شود.
         val delay = scaledTime(
             step.delay.coerceAtLeast(0L),
             activePlaybackSpeed,
@@ -1583,7 +1461,6 @@ class MacroAccessibilityService : AccessibilityService() {
         )
 
         performStep(step) { ok ->
-            // نتیجه‌های دیررس یا تکراری نادیده گرفته می‌شوند.
             if (attempt != currentAttempt) return@performStep
 
             currentAttempt++
@@ -1643,7 +1520,7 @@ class MacroAccessibilityService : AccessibilityService() {
 
             if (attempt != currentAttempt) return@Runnable
 
-            // باطل‌کردن نتیجه دیررس ژست قبلی
+            // نتیجه دیررس ژست قبلی دیگر پذیرفته نمی‌شود.
             currentAttempt++
             disarmWatchdog()
 
