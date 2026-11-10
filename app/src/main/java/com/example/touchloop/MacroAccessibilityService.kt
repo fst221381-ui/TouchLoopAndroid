@@ -308,51 +308,7 @@ class MacroAccessibilityService : AccessibilityService() {
             .getFloat("playback_speed", 1.0f)
             .coerceIn(0.25f, 30.0f)
 
-        speedRow.addView(
-    button("−") {
-        playbackSpeed =
-            (playbackSpeed - 0.25f).coerceAtLeast(0.25f)
-
-        updateSpeedLabel()
-
-        if (playing) {
-            status?.text = "سرعت جدید از اجرای بعدی اعمال می‌شود"
-        }
-    },
-    LinearLayout.LayoutParams(
-        0,
-        LinearLayout.LayoutParams.WRAP_CONTENT,
-        1f
-    )
-)
-
-speedRow.addView(
-    speedLabel,
-    LinearLayout.LayoutParams(
-        0,
-        LinearLayout.LayoutParams.WRAP_CONTENT,
-        1.5f
-    )
-)
-
-speedRow.addView(
-    button("+") {
-        playbackSpeed =
-            (playbackSpeed + 0.25f).coerceAtMost(20.0f)
-
-        updateSpeedLabel()
-
-        if (playing) {
-            status?.text = "سرعت جدید از اجرای بعدی اعمال می‌شود"
-        }
-    },
-    LinearLayout.LayoutParams(
-        0,
-        LinearLayout.LayoutParams.WRAP_CONTENT,
-        1f
-    )
-)
-
+    }
     private fun schedulePeriodicCheck() {
         handler.postDelayed(object : Runnable {
             override fun run() {
@@ -771,7 +727,7 @@ speedRow.addView(
         speedRow.addView(
             button("−") {
                 playbackSpeed =
-                    (playbackSpeed / 2f).coerceAtLeast(0.25f)
+    (playbackSpeed - 0.25f).coerceAtLeast(0.25f)
                 updateSpeedLabel()
 
                 if (playing) {
@@ -794,7 +750,7 @@ speedRow.addView(
         speedRow.addView(
             button("+") {
                 playbackSpeed =
-                    (playbackSpeed * 2f).coerceAtMost(8.0f)
+    (playbackSpeed + 0.25f).coerceAtMost(30.0f)
                 updateSpeedLabel()
 
                 if (playing) {
