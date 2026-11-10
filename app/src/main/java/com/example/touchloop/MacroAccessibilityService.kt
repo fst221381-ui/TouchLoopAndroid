@@ -81,12 +81,10 @@ class MacroAccessibilityService : AccessibilityService() {
     private var watchdogRunnable: Runnable? = null
     private var currentAttempt = 0L
 
-    // هماهنگی پخش
     private var expectedPkg: String? = null
     private var pkgMismatch = 0
     private var lastUiChangeAt = 0L
 
-    // مکث‌های کوتاه‌تر برای سرعت بالاتر؛ مسیر و مدت اسکرول مستقل می‌مانند.
     private val tapSettleMin = 25L
     private val swipeSettleMin = 35L
     private val backSettleMin = 80L
@@ -95,11 +93,10 @@ class MacroAccessibilityService : AccessibilityService() {
     private val loopGap = 50L
     private val maxPreStepDelay = 80L
 
-    // جلوگیری از fling برای ثابت‌تر ماندن مقدار اسکرول
     private val suppressFling = true
     private val scrollHoldDuration = 60L
 
-    // ضبط لمس
+    // تنظیمات ضبط لمس
     private var captureOverlay: View? = null
     private var captureParams: WindowManager.LayoutParams? = null
     private var capDownX = 0f
@@ -125,8 +122,10 @@ class MacroAccessibilityService : AccessibilityService() {
 
     private val baseUrl =
         "https://rkllnarnvbylpphshweu.supabase.co"
+
     private val checkLicenseEndpoint =
         "$baseUrl/functions/v1/check-license"
+
     private val apiKey =
         "sb_publishable_t8cRQM_w5THIwJvgXrYJNg_Fbxoaz6_"
 
@@ -140,7 +139,10 @@ class MacroAccessibilityService : AccessibilityService() {
         if (isLicenseBlocked) return false
 
         val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
-        if (!prefs.getBoolean("license_active", false)) return false
+
+        if (!prefs.getBoolean("license_active", false)) {
+            return false
+        }
 
         val currentDevice = Settings.Secure.getString(
             contentResolver,
@@ -176,7 +178,9 @@ class MacroAccessibilityService : AccessibilityService() {
 
     private fun checkLicenseStatusOnline(force: Boolean = false) {
         val now = System.currentTimeMillis()
+
         if (!force && now - lastOnlineCheck < checkInterval) return
+
         lastOnlineCheck = now
 
         val deviceId = Settings.Secure.getString(
@@ -195,6 +199,7 @@ class MacroAccessibilityService : AccessibilityService() {
                     connection.connectTimeout = 10000
                     connection.readTimeout = 10000
                     connection.doOutput = true
+
                     connection.setRequestProperty("apikey", apiKey)
                     connection.setRequestProperty(
                         "Content-Type",
@@ -213,6 +218,7 @@ class MacroAccessibilityService : AccessibilityService() {
                     }
 
                     val responseCode = connection.responseCode
+
                     val stream =
                         if (responseCode in 200..299) {
                             connection.inputStream
@@ -228,8 +234,10 @@ class MacroAccessibilityService : AccessibilityService() {
                     if (responseJson.optBoolean("success", false)) {
                         val isValid =
                             responseJson.optBoolean("is_valid", false)
+
                         val isBlocked =
                             responseJson.optBoolean("is_blocked", false)
+
                         val isExpired =
                             responseJson.optBoolean("is_expired", false)
 
@@ -314,6 +322,7 @@ class MacroAccessibilityService : AccessibilityService() {
         if (event == null || !playing) return
 
         val eventType = event.eventType
+
         if (
             eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
             eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED ||
@@ -336,8 +345,11 @@ class MacroAccessibilityService : AccessibilityService() {
         lastEventAt = System.currentTimeMillis()
 
         status?.text =
-            if (recording) "در حال ضبط • ${steps.size} مرحله"
-            else "${steps.size} مرحله"
+            if (recording) {
+                "در حال ضبط • ${steps.size} مرحله"
+            } else {
+                "${steps.size} مرحله"
+            }
     }
 
     private fun dp(value: Int): Int =
@@ -362,6 +374,7 @@ class MacroAccessibilityService : AccessibilityService() {
 
             if (newFlags != params.flags) {
                 params.flags = newFlags
+
                 panel?.let {
                     try {
                         wm.updateViewLayout(it, params)
@@ -383,6 +396,7 @@ class MacroAccessibilityService : AccessibilityService() {
 
             if (newFlags != params.flags) {
                 params.flags = newFlags
+
                 bubble?.let {
                     try {
                         wm.updateViewLayout(it, params)
@@ -427,6 +441,7 @@ class MacroAccessibilityService : AccessibilityService() {
             text =
                 if (isLicenseBlocked) "کد مسدود شده است"
                 else "Touch Loop آماده است"
+
             setTextColor(0xFFFFFFFF.toInt())
             textSize = 12f * scale
             gravity = Gravity.CENTER
@@ -453,10 +468,12 @@ class MacroAccessibilityService : AccessibilityService() {
                 text = label
                 textSize = 11f * scale
                 minimumHeight = scaledDp(32)
+
                 setPadding(
                     scaledDp(4), scaledDp(2),
                     scaledDp(4), scaledDp(2)
                 )
+
                 isAllCaps = false
 
                 setOnClickListener {
@@ -558,10 +575,12 @@ class MacroAccessibilityService : AccessibilityService() {
 
             recording = true
             lastEventAt = 0L
+
             executionReport?.visibility = View.GONE
 
             showCaptureOverlay()
-            status?.text = "در حال ضبط • لمس‌ها دقیق ثبت می‌شوند"
+
+            status?.text = "در حال ضبط • لمس‌ها ثبت می‌شوند"
         })
 
         contentContainer.addView(button("＋ کلیک") {
@@ -728,6 +747,7 @@ class MacroAccessibilityService : AccessibilityService() {
         scrollView.addView(contentContainer)
 
         root.addView(header)
+
         root.addView(
             scrollView,
             LinearLayout.LayoutParams(
@@ -885,13 +905,14 @@ class MacroAccessibilityService : AccessibilityService() {
         }
     }
 
-    // ======================= ضبط دقیق لمس =======================
+    // ======================= ضبط لمس =======================
 
     private fun showCaptureOverlay() {
         if (captureOverlay != null) return
 
         val view = View(this).apply {
-            setBackgroundColor(0x12FF3B30)
+            setBackgroundColor(0x00000000)
+
             setOnTouchListener { _, event ->
                 handleCaptureTouch(event)
                 true
@@ -1038,6 +1059,8 @@ class MacroAccessibilityService : AccessibilityService() {
                     }
 
                 addRecordedStep(step)
+
+                // اصلاح: بدون مکث اولیه ۸۰ میلی‌ثانیه‌ای.
                 replayLive(step)
             }
 
@@ -1048,26 +1071,35 @@ class MacroAccessibilityService : AccessibilityService() {
     private fun replayLive(step: Step) {
         setCaptureTouchable(false)
 
-        handler.postDelayed({
+        // به‌جای postDelayed با تأخیر ۸۰ میلی‌ثانیه، کار را در صف
+        // اصلی قرار می‌دهیم تا حرکت در اولین فرصت اجرا شود.
+        handler.post {
             if (!hasValidLicense() || !recording) {
                 setCaptureTouchable(true)
-                return@postDelayed
+                return@post
             }
 
-            performStep(step) {
-                handler.postDelayed({
-                    setCaptureTouchable(true)
+            performStep(step, liveCapture = true) {
+                handler.post {
+                    if (captureOverlay != null && recording) {
+                        setCaptureTouchable(true)
+                    }
+
                     lastEventAt = System.currentTimeMillis()
-                }, 40L)
+                }
             }
-        }, 80L)
+        }
     }
 
     // ======================= اجرای لمس =======================
 
-    private fun performStep(step: Step, done: (Boolean) -> Unit) {
+    private fun performStep(
+        step: Step,
+        liveCapture: Boolean = false,
+        done: (Boolean) -> Unit
+    ) {
         if (Build.VERSION.SDK_INT >= 24) {
-            performTouchStep(step, done)
+            performTouchStep(step, liveCapture, done)
             return
         }
 
@@ -1104,6 +1136,7 @@ class MacroAccessibilityService : AccessibilityService() {
     @android.annotation.TargetApi(24)
     private fun performTouchStep(
         step: Step,
+        liveCapture: Boolean,
         done: (Boolean) -> Unit
     ) {
         val isSwipe = step.kind == "SWIPE"
@@ -1112,23 +1145,27 @@ class MacroAccessibilityService : AccessibilityService() {
         val duration: Long
 
         if (isSwipe) {
-            // مختصات ابتدا و انتهای مسیر هرگز با سرعت تغییر نمی‌کنند.
+            // مسیر و مختصات در تمام سرعت‌های پخش ثابت می‌مانند.
             path.moveTo(step.x, step.y)
             path.lineTo(step.x2, step.y2)
 
-            // مدت اسکرول نیز از سرعت پخش مستقل است.
+            // مدت حرکت مستقل از سرعت پخش است.
             duration = step.duration.coerceIn(80L, 3000L)
         } else {
             path.moveTo(step.x, step.y)
             duration = 70L
         }
 
-        val stroke =
-            if (
-                isSwipe &&
+        // در ضبط زنده، حرکت انتهایی اضافه اجرا نمی‌شود؛ این کار مکث
+        // بعد از اسکرول را کاهش می‌دهد. در پخش معمولی، مهار fling حفظ می‌شود.
+        val shouldHoldEnd =
+            isSwipe &&
                 suppressFling &&
-                Build.VERSION.SDK_INT >= 26
-            ) {
+                Build.VERSION.SDK_INT >= 26 &&
+                !liveCapture
+
+        val stroke =
+            if (shouldHoldEnd) {
                 GestureDescription.StrokeDescription(
                     path,
                     0,
@@ -1153,11 +1190,7 @@ class MacroAccessibilityService : AccessibilityService() {
                 override fun onCompleted(
                     gestureDescription: GestureDescription?
                 ) {
-                    if (
-                        isSwipe &&
-                        suppressFling &&
-                        Build.VERSION.SDK_INT >= 26
-                    ) {
+                    if (shouldHoldEnd) {
                         holdSwipeEnd(
                             stroke,
                             step.x2,
@@ -1215,7 +1248,6 @@ class MacroAccessibilityService : AccessibilityService() {
                 override fun onCancelled(
                     gestureDescription: GestureDescription?
                 ) {
-                    // کشیدن اصلی انجام شده؛ دوباره اجرا نکن.
                     done(true)
                 }
             },
@@ -1286,7 +1318,6 @@ class MacroAccessibilityService : AccessibilityService() {
             else -> tapSettleMin
         }
 
-        // فقط مکث بین مراحل کم می‌شود؛ مسیر و مدت اسکرول دست‌نخورده‌اند.
         val minWait = (base / playbackSpeed)
             .toLong()
             .coerceAtLeast(15L)
@@ -1345,7 +1376,6 @@ class MacroAccessibilityService : AccessibilityService() {
 
         val step = steps[index]
 
-        // تأخیر ضبط‌شده محدود می‌شود و با سرعت پخش کاهش می‌یابد.
         val delay = (
             minOf(step.delay, maxPreStepDelay) / playbackSpeed
         ).toLong().coerceAtLeast(0L)
@@ -1657,6 +1687,7 @@ class MacroAccessibilityService : AccessibilityService() {
 
     private fun showMacroEditor() {
         val dialog = AlertDialog.Builder(this).create()
+
         dialog.window?.setType(
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
         )
@@ -1789,6 +1820,7 @@ class MacroAccessibilityService : AccessibilityService() {
 
     private fun showAddStepDialog() {
         val dialog = AlertDialog.Builder(this).create()
+
         dialog.window?.setType(
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
         )
@@ -1820,6 +1852,7 @@ class MacroAccessibilityService : AccessibilityService() {
                 setOnClickListener {
                     val width =
                         resources.displayMetrics.widthPixels.toFloat()
+
                     val height =
                         resources.displayMetrics.heightPixels.toFloat()
 
@@ -2013,6 +2046,7 @@ class MacroAccessibilityService : AccessibilityService() {
                 removePointPicker()
 
                 val now = System.currentTimeMillis()
+
                 val pre =
                     if (lastEventAt == 0L) {
                         350L
@@ -2029,6 +2063,7 @@ class MacroAccessibilityService : AccessibilityService() {
 
                 addRecordedStep(step)
                 replayLive(step)
+
                 true
             } else {
                 true
@@ -2250,7 +2285,6 @@ class MacroAccessibilityService : AccessibilityService() {
 
         playing = false
 
-        // با تغییر توکن، callbackهای مربوط به پخش قبلی بی‌اعتبار می‌شوند.
         playbackToken++
         currentAttempt++
 
@@ -2329,7 +2363,6 @@ class MacroAccessibilityService : AccessibilityService() {
                 val kind = obj.getString("kind")
 
                 if (kind == "SCROLL") {
-                    // تبدیل داده‌های ماکروی قدیمی به مسیر تقریبی.
                     val top = obj.optInt("top", 0)
                     val bottom = obj.optInt("bottom", 0)
                     val delta = obj.optInt("scrollDeltaY", 0)
