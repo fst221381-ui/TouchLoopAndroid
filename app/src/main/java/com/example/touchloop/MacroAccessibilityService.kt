@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
 import android.view.MotionEvent
@@ -51,6 +52,9 @@ class MacroAccessibilityService : AccessibilityService() {
     private var loopCount = 0
     private var lastEventAt = 0L
 
+    // شمارنده کل اجراهای کامل ماکرو (در تنظیمات ذخیره می‌شود)
+    private var completedRuns = 0L
+
     private var panel: View? = null
     private var bubble: View? = null
     private var panelParams: WindowManager.LayoutParams? = null
@@ -85,15 +89,30 @@ class MacroAccessibilityService : AccessibilityService() {
 
     private var expectedPkg: String? = null
     private var pkgMismatch = 0
+
+    // زمان آخرین تغییر رابط برنامه مقصد (با SystemClock.uptimeMillis)
     private var lastUiChangeAt = 0L
 
-    // مکث ثابت پس از مراحل حذف شده است.
-    // مرحله بعد پس از دریافت نتیجه اجرای مرحله فعلی شروع می‌شود.
-    private val tapSettleMin = 0L
-    private val swipeSettleMin = 0L
-    private val backSettleMin = 0L
-    private val settleQuiet = 0L
-    private val settleMax = 0L
+    // برای کم‌کردن هزینه بررسی لایسنس در رویدادهای پرتعداد
+    private var lastEventLicenseCheck = 0L
+
+    // ---------------- تنظیمات سرعت ----------------
+
+    // اگر true شود، مکث‌های ضبط‌شده بین مراحل هم اعمال می‌شود.
+    // پیش‌فرض false: مرحله بعد فقط پس از تکمیل و آرام‌شدن رابط شروع می‌شود.
+    private val useRecordedDelay = false
+
+    // پس از هر مرحله، حداکثر زمان انتظار برای تغییر/آرام‌شدن رابط (میلی‌ثانیه)
+    // این مقادیر با ضریب سرعت کوچک‌تر می‌شوند.
+    private val tapUiMaxWait = 300L
+    private val backUiMaxWait = 250L
+    private val swipeUiMaxWait = 120L
+
+    // رابط وقتی «آرام» حساب می‌شود که این مدت تغییر جدیدی نیامده باشد
+    private val uiQuietMs = 45L
+
+    // فاصله بررسی وضعیت رابط
+    private val uiPollMs = 8L
 
     // بدون فاصله اضافی بین دورهای ماکرو
     private val loopGap = 0L
@@ -102,9 +121,16 @@ class MacroAccessibilityService : AccessibilityService() {
     private val suppressFling = false
     private val scrollHoldDuration = 0L
 
+    // مدت کلیک هنگام پخش (کوتاه برای سرعت بالا)
+    private val tapDuration = 20L
+
     // سرعت فقط مدت حرکت را تغییر می‌دهد، نه مختصات یا مسافت را.
-    private val minSwipeDuration = 5L
+    // زیر حدود ۶۰ میلی‌ثانیه، اسکرول در بعضی برنامه‌ها به کلیک تبدیل می‌شود.
+    private val minSwipeDuration = 60L
     private val maxSwipeDuration = 3000L
+
+    // زمان انتظار برای نتیجه ژست قبل از تلاش مجدد
+    private val watchdogBaseTimeout = 1500L
 
     private var captureOverlay: View? = null
     private var captureParams: WindowManager.LayoutParams? = null
@@ -145,15 +171,15 @@ class MacroAccessibilityService : AccessibilityService() {
         powerManager?.isInteractive ?: true
 
     private fun scaledTime(
-    original: Long,
-    speed: Float = activePlaybackSpeed,
-    minimum: Long = 1L
-): Long {
-    if (original <= 0L) return 0L
+        original: Long,
+        speed: Float = activePlaybackSpeed,
+        minimum: Long = 1L
+    ): Long {
+        if (original <= 0L) return 0L
 
-    return (original / speed.coerceIn(0.25f, 20.0f))
-        .toLong()
-        .coerceAtLeast(minimum)
+        return (original / speed.coerceIn(0.25f, 20.0f))
+            .toLong()
+            .coerceAtLeast(minimum)
     }
 
     private fun hasValidLicense(): Boolean {
@@ -287,41 +313,59 @@ class MacroAccessibilityService : AccessibilityService() {
             }
         }.start()
     }
-override fun onServiceConnected() {
-    super.onServiceConnected()
 
-    wm = getSystemService(WINDOW_SERVICE) as WindowManager
+    override fun onServiceConnected() {
+        super.onServiceConnected()
 
-    val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
+        wm = getSystemService(WINDOW_SERVICE) as WindowManager
 
-    panelWidthDp = prefs.getInt("panel_width_dp", 220)
-        .coerceIn(minPanelWidthDp, 450)
+        // رویدادهای تغییر رابط باید بدون تأخیر و بدون فیلتر برسند
+        // تا مرحله بعد دقیقاً پس از آماده‌شدن صفحه شروع شود.
+        try {
+            serviceInfo?.let { info ->
+                info.eventTypes = info.eventTypes or
+                    AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
+                    AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
+                    AccessibilityEvent.TYPE_VIEW_SCROLLED
+                info.notificationTimeout = 0L
+                serviceInfo = info
+            }
+        } catch (_: Exception) {
+        }
 
-    panelHeightDp = prefs.getInt("panel_height_dp", 320)
-        .coerceIn(minPanelHeightDp, 800)
+        val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
 
-    playbackSpeed = prefs
-        .getFloat("playback_speed", 1.0f)
-        .coerceIn(0.25f, 30.0f)
+        panelWidthDp = prefs.getInt("panel_width_dp", 220)
+            .coerceIn(minPanelWidthDp, 450)
 
-    loadMacro()
+        panelHeightDp = prefs.getInt("panel_height_dp", 320)
+            .coerceIn(minPanelHeightDp, 800)
 
-    if (!Settings.canDrawOverlays(this) &&
-        Build.VERSION.SDK_INT < 23
-    ) {
-        return
+        playbackSpeed = prefs
+            .getFloat("playback_speed", 1.0f)
+            .coerceIn(0.25f, 30.0f)
+
+        completedRuns = prefs.getLong("macro_run_count", 0L)
+
+        loadMacro()
+
+        if (!Settings.canDrawOverlays(this) &&
+            Build.VERSION.SDK_INT < 23
+        ) {
+            return
+        }
+
+        if (!hasValidLicense()) {
+            stopAll()
+            status?.text = "ابتدا لایسنس معتبر را فعال کن"
+            return
+        }
+
+        showPanel()
+        schedulePeriodicCheck()
+        checkLicenseStatusOnline(force = true)
     }
 
-    if (!hasValidLicense()) {
-        stopAll()
-        status?.text = "ابتدا لایسنس معتبر را فعال کن"
-        return
-    }
-
-    showPanel()
-    schedulePeriodicCheck()
-    checkLicenseStatusOnline(force = true)
-}
     private fun schedulePeriodicCheck() {
         handler.postDelayed(object : Runnable {
             override fun run() {
@@ -334,14 +378,23 @@ override fun onServiceConnected() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (!hasValidLicense()) {
-            recording = false
-            hideCaptureOverlay()
-            stopPlayback()
-            return
+        if (event == null) return
+
+        // بررسی لایسنس حداکثر هر ۱ ثانیه (رویدادها پشت‌سرهم و زیاد می‌آیند)
+        val now = SystemClock.uptimeMillis()
+
+        if (now - lastEventLicenseCheck >= 1000L) {
+            lastEventLicenseCheck = now
+
+            if (!hasValidLicense()) {
+                recording = false
+                hideCaptureOverlay()
+                stopPlayback()
+                return
+            }
         }
 
-        if (event == null || !playing) return
+        if (!playing) return
 
         val eventType = event.eventType
 
@@ -351,7 +404,7 @@ override fun onServiceConnected() {
             eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED
         ) {
             if (event.packageName?.toString() != packageName) {
-                lastUiChangeAt = System.currentTimeMillis()
+                lastUiChangeAt = now
             }
         }
     }
@@ -669,7 +722,7 @@ override fun onServiceConnected() {
 
                 expectedPkg = currentPackage()
                 pkgMismatch = 0
-                lastUiChangeAt = System.currentTimeMillis()
+                lastUiChangeAt = SystemClock.uptimeMillis()
 
                 status?.text =
                     "در حال پخش با سرعت ${formatSpeed(activePlaybackSpeed)}×"
@@ -740,7 +793,7 @@ override fun onServiceConnected() {
         speedRow.addView(
             button("−") {
                 playbackSpeed =
-    (playbackSpeed - 0.25f).coerceAtLeast(0.25f)
+                    (playbackSpeed - 0.25f).coerceAtLeast(0.25f)
                 updateSpeedLabel()
 
                 if (playing) {
@@ -763,7 +816,7 @@ override fun onServiceConnected() {
         speedRow.addView(
             button("+") {
                 playbackSpeed =
-    (playbackSpeed + 0.25f).coerceAtMost(30.0f)
+                    (playbackSpeed + 0.25f).coerceAtMost(30.0f)
                 updateSpeedLabel()
 
                 if (playing) {
@@ -923,7 +976,8 @@ override fun onServiceConnected() {
 
         executionReport?.text =
             "دور $loopCount • مرحله $current از $total " +
-                "(${stepTypeName(steps.getOrNull(playIndex)?.kind)})"
+                "(${stepTypeName(steps.getOrNull(playIndex)?.kind)})" +
+                "\nکل اجراهای کامل: $completedRuns"
     }
 
     private fun stepTypeName(kind: String?): String =
@@ -1110,23 +1164,26 @@ override fun onServiceConnected() {
     private fun replayLive(step: Step) {
         setCaptureTouchable(false)
 
-        handler.post {
+        handler.postDelayed({
             if (!hasValidLicense() || !recording) {
-                setCaptureTouchable(true)
-                return@post
+                if (captureOverlay != null && recording) {
+                    setCaptureTouchable(true)
+                }
+                return@postDelayed
             }
 
-            performStep(step, liveCapture = true) {
+            performStep(step, liveCapture = true) { success ->
                 handler.post {
                     if (captureOverlay != null && recording) {
                         setCaptureTouchable(true)
                     }
 
-                    // زمان آخرین رویداد هنگام ثبت مرحله تنظیم می‌شود.
-                    // اینجا آن را تغییر نمی‌دهیم تا تأخیر مصنوعی ایجاد نشود.
+                    if (!success && recording) {
+                        status?.text = "اجرای لمس ضبط‌شده ناموفق بود"
+                    }
                 }
             }
-        }
+        }, 40L)
     }
 
     // ======================= اجرای لمس =======================
@@ -1229,7 +1286,7 @@ override fun onServiceConnected() {
                 35L
             } else {
                 scaledTime(
-                    35L,
+                    tapDuration,
                     activePlaybackSpeed,
                     8L
                 )
@@ -1285,16 +1342,64 @@ override fun onServiceConnected() {
         status?.text = message
     }
 
+    private fun saveRunCount() {
+        getSharedPreferences("touch_loop", MODE_PRIVATE)
+            .edit()
+            .putLong("macro_run_count", completedRuns)
+            .apply()
+    }
+
     /*
-     * تابع قبلی waitForSettle عمداً از مسیر پخش حذف شده است.
-     * انتظار برای تغییر رابط کاربری و مکث ثابت بعد از هر مرحله
-     * باعث کندی محسوس در سرعت‌های بالا می‌شد.
+     * انتظار هوشمند پس از هر مرحله:
+     * - اگر رابط برنامه مقصد بعد از شروع مرحله تغییر کرد، منتظر می‌مانیم
+     *   تا uiQuietMs میلی‌ثانیه تغییر جدیدی نیاید و فوراً ادامه می‌دهیم.
+     * - اگر تغییری نیامد، حداکثر تا سقف زمانی هر نوع مرحله صبر می‌کنیم
+     *   (تا هیچ‌وقت هنگ نکند) و ادامه می‌دهیم.
+     * هیچ مکث ثابتی در کار نیست.
      */
+    private fun waitForUiSettle(
+        kind: String,
+        startedAt: Long,
+        session: Int,
+        onReady: () -> Unit
+    ) {
+        val maxWait = when (kind) {
+            "TAP" -> tapUiMaxWait
+            "BACK" -> backUiMaxWait
+            else -> swipeUiMaxWait
+        }
+
+        val limit = scaledTime(maxWait, activePlaybackSpeed, 60L)
+        val quiet = scaledTime(uiQuietMs, activePlaybackSpeed, 15L)
+        val deadline = SystemClock.uptimeMillis() + limit
+
+        fun poll() {
+            if (!playing || session != playbackToken) return
+
+            val now = SystemClock.uptimeMillis()
+            val changed = lastUiChangeAt >= startedAt
+
+            if (changed && now - lastUiChangeAt >= quiet) {
+                onReady()
+                return
+            }
+
+            if (now >= deadline) {
+                onReady()
+                return
+            }
+
+            handler.postDelayed({ poll() }, uiPollMs)
+        }
+
+        poll()
+    }
 
     private fun afterAction(
         kind: String,
         index: Int,
-        session: Int
+        session: Int,
+        startedAt: Long
     ) {
         if (!playing || session != playbackToken) return
 
@@ -1303,8 +1408,10 @@ override fun onServiceConnected() {
             return
         }
 
-        // مرحله بعد بلافاصله بعد از callback مرحله جاری شروع می‌شود.
-        runStep(index + 1, session, 0)
+        // مرحله بعد فقط بعد از تکمیل واقعی مرحله فعلی شروع می‌شود.
+        waitForUiSettle(kind, startedAt, session) {
+            runStep(index + 1, session, 0)
+        }
     }
 
     private fun runNext(session: Int) {
@@ -1329,7 +1436,10 @@ override fun onServiceConnected() {
         }
 
         if (index >= steps.size) {
+            // یک دور کامل شد؛ دور بعد بدون وقفه از مرحله اول شروع می‌شود.
             loopCount++
+            completedRuns++
+            saveRunCount()
             playIndex = 0
             updateExecutionReport()
 
@@ -1351,17 +1461,22 @@ override fun onServiceConnected() {
 
         val step = steps[index]
 
-        // زمان انتظار ضبط‌شده با ضریب سرعت تقسیم می‌شود.
-        val delay = 0L
+        // به‌صورت پیش‌فرض مکث ضبط‌شده اعمال نمی‌شود.
+        val delay =
+            if (useRecordedDelay) {
+                scaledTime(step.delay, activePlaybackSpeed, 0L)
+            } else {
+                0L
+            }
 
-        handler.postDelayed({
+        val stepAction = Runnable {
             if (!hasValidLicense()) {
                 stopPlayback()
-                return@postDelayed
+                return@Runnable
             }
 
             if (!playing || session != playbackToken) {
-                return@postDelayed
+                return@Runnable
             }
 
             if (!isScreenOn()) {
@@ -1373,7 +1488,7 @@ override fun onServiceConnected() {
                     }
                 }, 1000L)
 
-                return@postDelayed
+                return@Runnable
             }
 
             val expected = expectedPkg
@@ -1386,7 +1501,7 @@ override fun onServiceConnected() {
 
                     if (pkgMismatch > 6) {
                         failPlayback("از برنامه خارج شد؛ پخش متوقف شد")
-                        return@postDelayed
+                        return@Runnable
                     }
 
                     status?.text = "منتظر بازگشت به برنامه…"
@@ -1397,7 +1512,7 @@ override fun onServiceConnected() {
                         }
                     }, 400L)
 
-                    return@postDelayed
+                    return@Runnable
                 } else {
                     pkgMismatch = 0
                 }
@@ -1405,17 +1520,20 @@ override fun onServiceConnected() {
 
             when (step.kind) {
                 "BACK" -> {
+                    val startedAt = SystemClock.uptimeMillis()
+
                     val accepted =
                         performGlobalAction(GLOBAL_ACTION_BACK)
 
                     if (accepted) {
-                        afterAction("BACK", index, session)
+                        // منتظر می‌ماند تا صفحه قبلی واقعاً آماده شود.
+                        afterAction("BACK", index, session, startedAt)
                     } else if (retry < maxStepRetries) {
                         handler.postDelayed({
                             if (playing && session == playbackToken) {
                                 runStep(index, session, retry + 1)
                             }
-                        }, scaledTime(100L, activePlaybackSpeed, 10L))
+                        }, scaledTime(60L, activePlaybackSpeed, 10L))
                     } else {
                         failPlayback("اجرای مرحله بازگشت ناموفق بود")
                     }
@@ -1429,7 +1547,13 @@ override fun onServiceConnected() {
                     runStep(index + 1, session, 0)
                 }
             }
-        }, delay)
+        }
+
+        if (delay <= 0L) {
+            handler.post(stepAction)
+        } else {
+            handler.postDelayed(stepAction, delay)
+        }
     }
 
     private fun dispatchStep(
@@ -1454,8 +1578,10 @@ override fun onServiceConnected() {
             session,
             retry,
             attempt,
-            15000L + step.duration
+            watchdogBaseTimeout + step.duration
         )
+
+        val startedAt = SystemClock.uptimeMillis()
 
         performStep(step) { ok ->
             if (attempt != currentAttempt) return@performStep
@@ -1468,10 +1594,12 @@ override fun onServiceConnected() {
             }
 
             if (ok) {
-                afterAction(step.kind, index, session)
+                afterAction(step.kind, index, session, startedAt)
             } else if (retry < maxStepRetries) {
+                // فقط همین مرحله ناموفق دوباره تلاش می‌شود؛
+                // مراحل موفق قبلی هرگز تکرار نمی‌شوند.
                 val backoff = scaledTime(
-                    if (retry < 2) 120L else 300L,
+                    if (retry < 2) 60L else 200L,
                     activePlaybackSpeed,
                     20L
                 )
@@ -1533,7 +1661,7 @@ override fun onServiceConnected() {
                         session,
                         retry + 1
                     )
-                }, scaledTime(100L, activePlaybackSpeed, 20L))
+                }, scaledTime(60L, activePlaybackSpeed, 20L))
             } else {
                 failPlayback(
                     "مرحله ${index + 1} ناموفق بود؛ پخش متوقف شد"
