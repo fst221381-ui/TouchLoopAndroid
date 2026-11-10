@@ -287,28 +287,41 @@ class MacroAccessibilityService : AccessibilityService() {
             }
         }.start()
     }
+override fun onServiceConnected() {
+    super.onServiceConnected()
 
-    override fun onServiceConnected() {
-        super.onServiceConnected()
+    wm = getSystemService(WINDOW_SERVICE) as WindowManager
 
-        wm = getSystemService(WINDOW_SERVICE) as WindowManager
+    val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
 
-        checkLicenseStatusOnline(force = true)
+    panelWidthDp = prefs.getInt("panel_width_dp", 220)
+        .coerceIn(minPanelWidthDp, 450)
 
-        if (!hasValidLicense()) {
-            stopAll()
-            return
-        }
+    panelHeightDp = prefs.getInt("panel_height_dp", 320)
+        .coerceIn(minPanelHeightDp, 800)
 
-        loadMacro()
+    playbackSpeed = prefs
+        .getFloat("playback_speed", 1.0f)
+        .coerceIn(0.25f, 30.0f)
 
-        val prefs = getSharedPreferences("touch_loop", MODE_PRIVATE)
+    loadMacro()
 
-        playbackSpeed = prefs
-            .getFloat("playback_speed", 1.0f)
-            .coerceIn(0.25f, 30.0f)
-
+    if (!Settings.canDrawOverlays(this) &&
+        Build.VERSION.SDK_INT < 23
+    ) {
+        return
     }
+
+    if (!hasValidLicense()) {
+        stopAll()
+        status?.text = "ابتدا لایسنس معتبر را فعال کن"
+        return
+    }
+
+    showPanel()
+    schedulePeriodicCheck()
+    checkLicenseStatusOnline(force = true)
+}
     private fun schedulePeriodicCheck() {
         handler.postDelayed(object : Runnable {
             override fun run() {
